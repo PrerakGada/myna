@@ -92,9 +92,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// True when the host binary is running an XCTest bundle. We use
     /// this to skip side-effectful registration (hotkeys, polling
     /// timers, audio engine creation) that the tests don't want.
+    ///
+    /// IMPORTANT: only the env-var check is reliable. macOS 15+ auto-loads
+    /// `XCTestSupport.framework` into every app's address space for the
+    /// in-process testing infrastructure, which makes `NSClassFromString("XCTestCase")`
+    /// return non-nil even in normal Finder launches. Including that check
+    /// in the OR made the bootstrap permanently skip in shipped builds —
+    /// users saw "Myna initialising…" forever.
     private var isRunningTests: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-            || NSClassFromString("XCTestCase") != nil
     }
 
     func applicationWillTerminate(_ notification: Notification) {
