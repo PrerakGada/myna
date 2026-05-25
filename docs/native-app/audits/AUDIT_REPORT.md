@@ -84,6 +84,122 @@ Auditors append their findings here. Each lane gets one code-review section. One
 
 **Rationale:** The two "🔴 Blockers" above are real contract drifts but their impact is muted because the canonical Swift consumer (Lane A — not yet implemented) will silently drop the extra `null` fields via `JSONDecoder`'s default behaviour. They are still blockers per the audit prompt's literal phrasing ("Any drift is a 🔴 blocker"), and they will become *actual* blockers if any non-Swift client (curl, CLI, future TypeScript app, contract tests with strict decoders) consumes these endpoints. **Recommend approve-with-followups: fix both with `model_dump(exclude_none=True)` (or split response models) before Lane A integrates against these endpoints.** Test suite is green, streaming format is correct, no security issues, no v1 regressions, version bump correct.
 
+## Lane B Code Review — 2026-05-25
+
+### Summary
+- Modules reviewed: `.github/workflows/{release,appcast,ci}.yml`; `dist/{_lib,build,sign,notarize,dmg,appcast}.sh`; `dist/tests/test_scripts.sh`; `tap/Casks/myna.rb`; `tap/Formula/myna-daemon.rb`; `apps/macos/Sources/Updates/UpdateController.swift`; `apps/macos/project.yml` (Sparkle keys + Info.plist generation); `RELEASE.md` (end-to-end).
+- Workflow YAML parse: **3/3 OK** (`.github/workflows/{release,appcast,ci}.yml` via `yaml.safe_load`).
+- `bash dist/tests/test_scripts.sh` → **16 pass, 0 fail** (parse / --help / --dry-run on all 5 scripts). Shellcheck warning that shellcheck wasn't installed; I installed `shellcheck 0.11.0` and ran it manually — see "🟡 Should-fix" #1 below.
+- `bash -n` all `dist/*.sh`: **6/6 OK** (including `_lib.sh`).
+- `brew style tap/Casks/myna.rb`: 1 autocorrectable offense (`OSDependsOn`; see 🟡 #4). `brew style tap/Formula/myna-daemon.rb`: 0 offenses.
+- Xcode build: `xcodegen generate` + full `xcodebuild build` → **`** BUILD SUCCEEDED **`**. `Info.plist` correctly carries `SUPublicEDKey=i+MLgN/...K0=`, `SUFeedURL=https://github.com/CHANGEME/myna/...`, `LSUIElement=true`, `CFBundleURLSchemes=[myna]`, `Sparkle.framework` linked.
+- Secret-documentation table: every secret referenced in `release.yml` (`APPLE_DEVELOPER_ID_P12`, `..._P12_PASSWORD`, `APPLE_DEVELOPER_ID_NAME`, `APPLE_ID`, `APPLE_ID_APP_PASSWORD`, `APPLE_TEAM_ID`, `KEYCHAIN_PASSWORD`, `SPARKLE_EDDSA_PRIVATE_KEY`, `TAP_DEPLOY_KEY`) is documented in `RELEASE.md` § 1.6. `GITHUB_TOKEN` is auto-provided by Actions — no setup needed. **PASS.**
+- Codesign correctness: hardened runtime (`--options runtime` `dist/sign.sh:57,67`) ✅, `--timestamp` ✅, `--entitlements Resources/Myna.entitlements` ✅, nested-bundle pre-signing ✅, `notarytool --wait --timeout 30m` (`dist/notarize.sh:61–62`) ✅, `stapler staple` then `validate` (`dist/notarize.sh:67–68`) ✅, DMG signed with `--timestamp` (`release.yml:247`) ✅, DMG notarized separately (`release.yml:249–256`) ✅, `if-no-files-found: error` on every artifact upload ✅, only `|| true` in workflow is `xcode-select` (acceptable).
+- `appcast.yml` trigger: **`workflow_dispatch` only** (`.github/workflows/appcast.yml:17`) — does not fire on push. ✅
+- Universal binary configured: `dist/build.sh:31` `ARCHS="${ARCHS:-arm64 x86_64}"` passed to `xcodebuild archive` (`build.sh:61`). ✅ (Debug build is single-arch but Release archive is universal.)
+
+### 🔴 Blockers
+
+1. **Sparkle EdDSA private key is effectively published in the repo.**
+   - **File:line:** `dist/tests/test_scripts.sh:26` exports `SPARKLE_EDDSA_PRIVATE_KEY="VB1oLQU4trMsELZLWQXBQQ0NcZYHF/HpBs+4t0K6N3U="`. This is a 32-byte Ed25519 seed that derives to public key `i+MLgN/F6W8JB9ToiLVRCdFvPkLhv1R21BdqrkIF8K0=` — which is bit-identical to `apps/macos/project.yml:54` `SUPublicEDKey` and to the value baked into the built `Info.plist`.
+   - **Evidence:** Re-derived locally:
+     ```
+     $ python3 -c "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey; \
+       from cryptography.hazmat.primitives import serialization; import base64; \
+       pk=Ed25519PrivateKey.from_private_bytes(base64.b64decode('VB1oLQU4trMsELZLWQXBQQ0NcZYHF/HpBs+4t0K6N3U=')); \
+       print(base64.b64encode(pk.public_key().public_bytes(encoding=serialization.Encoding.Raw, \
+         format=serialization.PublicFormat.Raw)).decode())"
+     i+MLgN/F6W8JB9ToiLVRCdFvPkLhv1R21BdqrkIF8K0=
+     ```
+     Commit history: introduced as a "test fixture" in `ec31a3f feat(release): dist/ scripts + smoke tests` (before the public key was minted in `bb43ea7` / `f150e68`). The public key in `project.yml` matches it exactly, so this is not a placeholder — it's the live key.
+   - **Impact:** Anyone with read access to the repo (or to the history) can sign arbitrary `.dmg`s that Sparkle clients of any shipped Myna build will accept as authentic. Once a v0.1.0 build is in users' hands, the only fix is shipping a new minor version with a new public key (RELEASE.md § 1.4 calls out this exact non-rotatable property). Spec violation: `NATIVE_APP_PROPOSAL.md` § 11 requires "EdDSA-signed (Sparkle 2 default; required)" — this requirement is met only nominally; trust is broken.
+   - **Recommended fix:**
+     1. **Immediately** rotate the Sparkle keypair before any v0.1.0 release goes out (no shipped builds yet, so safe to do).
+     2. Generate a new key via `brew install --cask sparkle && /opt/homebrew/Caskroom/sparkle/*/bin/generate_keys` (or via `openssl genpkey -algorithm ed25519`).
+     3. Update `apps/macos/project.yml` `SUPublicEDKey` and rebuild Info.plist.
+     4. Stash the new private key in 1Password and GitHub Actions secret only.
+     5. **Replace `dist/tests/test_scripts.sh:26`** with a *throwaway* test-only key (e.g. a freshly generated `openssl genpkey -algorithm ed25519 -outform DER 2>/dev/null | tail -c 32 | base64`) that has no relationship to the production key. Add a comment marking it as test-only and orthogonal to the real public key.
+     6. `git filter-repo` (or accept the leak and rotate — the branch isn't pushed publicly per checklist scope, but verify before any push).
+
+2. **Appcast signing in CI cannot succeed — `sign_update` not installed, `/usr/bin/openssl` (LibreSSL) doesn't support Ed25519.**
+   - **File:line:** `dist/appcast.sh:61–88` + `.github/workflows/release.yml:265–306` + `.github/workflows/appcast.yml`.
+   - **Evidence:**
+     - `appcast.sh:63` calls `sign_update` if `command -v sign_update` returns truthy, falling back to openssl otherwise. Neither `release.yml` nor `appcast.yml` runs `brew install --cask sparkle` (the only way to get `sign_update` on a macOS runner). `grep -rn "sparkle\|sign_update" .github/workflows/` confirms no install step.
+     - Fallback at `appcast.sh:86` hardcodes `/usr/bin/openssl`, which on macOS is LibreSSL 3.3:
+       ```
+       $ /usr/bin/openssl pkeyutl -sign -inkey <pkcs8-ed25519.pem> -rawin -in input -out sig
+       unable to load Private Key
+       error:06FFF09C ... unsupported algorithm
+       error:06FFF076 ... TYPE=Ed25519
+       ```
+       Reproduced with the daemon-side helper PEM generator from lines 73–84.
+     - The brew-installed OpenSSL 3.6.2 (at `/opt/homebrew/bin/openssl`) does support Ed25519 and would produce a correct 64-byte signature, but the script does not use it.
+   - **Impact:** Every real release will go *past* the GitHub release attach step (which depends only on `gh release create` + DMG) and then **fail at the appcast job with `set -e`**. Users on existing installs see no update; the GH release ships unsigned-appcast (i.e. Sparkle clients reject it). The release.yml `tap-bump` job is gated on `needs: [preflight, appcast, release]`, so the tap also won't bump. Effectively: every release is half-shipped.
+   - **Recommended fix:**
+     1. Add `brew install --cask sparkle` to the `appcast` job in `release.yml` (and to `refresh` in `appcast.yml`) before `bash dist/appcast.sh`; export `/opt/homebrew/Caskroom/sparkle/*/bin/sign_update` onto PATH.
+     2. As a belt-and-braces fallback inside `appcast.sh:86`, change `/usr/bin/openssl` → `${OPENSSL:-openssl}` and have the workflow set `OPENSSL=/opt/homebrew/bin/openssl` (or just let PATH lookup find brew's). Verifying the chosen openssl supports Ed25519 (`openssl pkeyutl -algorithm ed25519 -help 2>&1 | head -1` etc.) at script start would convert this from a runtime failure to a preflight error.
+     3. Add a smoke-test path in `dist/tests/test_scripts.sh` that does the *real* (non-dry) signing against a tempfile and verifies the resulting `<item>` parses + signature roundtrip — would have caught this at PR time.
+
+### 🟡 Should-fix
+
+1. **Shellcheck offenses across `dist/`** (shellcheck 0.11.0; tool wasn't installed when smoke tests ran — I installed and re-ran).
+   - `dist/_lib.sh:61` SC2294 — `eval "$@"` in `run()`; intentional (DRY_RUN wrapper) but worth either `# shellcheck disable=SC2294` with a comment or refactoring to array-form.
+   - `dist/sign.sh:42,58` SC2089/SC2090 — `keychain_arg="--keychain '$KEYCHAIN_PATH'"` then `$keychain_arg` unquoted. Will silently misbehave if `KEYCHAIN_PATH` contains spaces; on CI the path is `$RUNNER_TEMP/myna-build.keychain-db` so OK in practice, but should be an array.
+   - `dist/*.sh` SC2034 — `SCRIPT_HELP` is read by `parse_common_args` via dynamic scoping; harmless but trips shellcheck. `# shellcheck disable=SC2034` next to each assignment would silence cleanly.
+   - **Recommended fix:** Add disable-comments where intentional, refactor `keychain_arg` to an array. Also: the smoke test at `test_scripts.sh:54–63` *silently warns* if shellcheck is missing — flip this to **install** shellcheck in CI (`brew install shellcheck` already happens nowhere in `ci.yml`'s `dist-scripts` job — add it). Right now nobody is actually running shellcheck.
+
+2. **`dist/sign.sh:50` uses `mapfile`, which requires bash 4+.**
+   - `#!/usr/bin/env bash` resolves to `/bin/bash` (3.2) on stock macOS. The GH `macos-15` runner ships brew-bash 5 by default *and* puts it ahead of `/bin/bash` in PATH, so this *probably* works in CI, but it'll break the moment a contributor runs `dist/sign.sh` locally on a Mac without brew bash. The dry-run smoke test skips the `mapfile` block (`if [ "${DRY_RUN:-0}" != "1" ]; then ... mapfile ...`), so the smoke test wouldn't catch a regression.
+   - **Recommended fix:** Replace `mapfile -t targets < <(find …)` with a portable while-read loop, or bump the shebang to `#!/usr/bin/env -S /opt/homebrew/bin/bash` (less portable) or `#!/opt/homebrew/bin/bash` with a fallback note. Easiest: while-read.
+
+3. **`dist/appcast.sh:149` shell-interpolates `$ITEM_XML` into a Python triple-quoted string — latent injection vector.**
+   - **File:line:** `dist/appcast.sh:146–164`. Currently the interpolated content is built from `VERSION` (CI tag), `BUILD`, and a fixed `RELEASE_NOTES_URL` template — all controlled. But the moment somebody wants to put real release-notes text into the appcast item, a `"""` in the notes would break out of the Python string and execute arbitrary Python.
+   - **Recommended fix:** Pass `ITEM_XML` to Python via a tempfile or env var (`os.environ['ITEM_XML']`) instead of shell interpolation.
+
+4. **`tap/Casks/myna.rb:18` triggers `brew style` autocorrectable offense.**
+   - `depends_on macos: ">= :ventura"` should be `depends_on macos: :ventura` (the `>=` is implicit for cask). Single autocorrectable issue.
+   - **Recommended fix:** Run `brew style --fix tap/Casks/myna.rb` (or hand-edit).
+
+5. **`tap/Formula/myna-daemon.rb:88` `test do` assertion will fail.**
+   - **Evidence:** Assertion is `assert_match "usage", shell_output("#{bin}/myna-daemon --help 2>&1")`. The daemon's `__main__.py` has no argparse — it calls `uvicorn.run(...)` immediately, ignoring `--help`. Reproduced locally via `~/.venvs/myna/bin/python -m myna --help` → emits uvicorn startup logs (`INFO: Started server process …`), then attempts to bind 8766. Word `"usage"` is never printed. `brew test myna-daemon` would fail.
+   - **Recommended fix:** Either (a) add a real `argparse` to `daemon/myna/__main__.py` with at least `--help`/`--port`/`--host`/`--version`, or (b) change the formula test to a less-invasive assertion such as `assert_predicate bin/"myna-daemon", :executable?` plus `assert_match "0.2.0", shell_output("#{libexec}/bin/python -c 'import myna; print(myna.__version__)'")`. Option (a) is the right fix for general daemon UX.
+
+6. **`tap/Formula/myna-daemon.rb` writes `keybindings.json` to `etc/myna/`, but the daemon reads `~/.config/myna/`.**
+   - **File:line:** `tap/Formula/myna-daemon.rb:43–51` writes `etc/"myna/keybindings.json"`; service block sets `MYNA_CONFIG_DIR: etc/"myna"` (line 62). `daemon/myna/config.py:5` hardcodes `CONFIG_DIR = pathlib.Path(os.path.expanduser("~/.config/myna"))` — `MYNA_CONFIG_DIR` is **not consulted**. So the formula-installed keybindings file is never read by the daemon. Note: keybindings in v2 are owned by the Swift app (via `KeyboardShortcuts`), so daemon-side keybindings are vestigial v1 — but the install path mismatch still means the formula and the running daemon disagree about where config lives.
+   - **Recommended fix:** Either (a) make `daemon/myna/config.py` respect `os.environ.get("MYNA_CONFIG_DIR")` with fallback to `~/.config/myna`, or (b) drop `keybindings.json` from the formula install entirely (Lane A/Swift owns keybindings in v2) and pare `etc/myna` down to optional `config.json` only. Option (a) is the smaller change.
+
+7. **Concurrency / idempotence: `release.yml` `appcast` job pulls existing appcast with `|| echo "no existing appcast"`.**
+   - **File:line:** `.github/workflows/release.yml:295–299`. If `gh release download appcast` fails for *any* reason other than 404 (auth glitch, transient API error), the script continues and `dist/appcast.sh` writes a fresh `appcast.xml` containing **only** the current version. All previous versions vanish from the feed → existing installs see no rollback path and Sparkle's edge-case "newer-version-than-current" handling is fine, but historical metadata is lost.
+   - **Recommended fix:** Distinguish 404 (expected on first release) from other failures. E.g. check `gh release view appcast` first; if it exists, *require* the download to succeed.
+
+### 🟢 Nits
+
+1. **`dist/appcast.sh:43,136` and `tap/*.rb` use `CHANGEME` placeholders.** `RELEASE.md § 1.7` documents this as operator work — acceptable but could use a single `dist/configure-owner.sh OWNER` helper that performs the find-replace.
+2. **`release.yml` runs every job on a fresh `macos-15` runner with `actions/checkout@v4`** — each job re-pays the checkout cost. Could be optimized via `actions/cache` for xcodegen/brew, but optimization is premature.
+3. **`dist/_lib.sh:74–95` `version_from_tag` precedence is `VERSION env > GITHUB_REF_NAME > GITHUB_REF > MARKETING_VERSION`**, which is sensible, but the fallback "0.0.0-dev" silently masks an empty `MARKETING_VERSION`. Should `die` instead.
+4. **`UpdateController.swift`** is clean — no `print()`, no `try!`, no `fatalError`, `@MainActor` correct, `cancellables` stored, `[weak self]` in Combine sink. ✅ Nit: comment at line 31 references "AppDelegate-era code" but the app is pure-SwiftUI — slightly anachronistic.
+5. **`apps/macos/project.yml`** has `SUEnableInstallerLauncherService: YES`. Sparkle 2 requires this for XPC-launched installer; just confirming intentional. ✅
+6. **`appcast.yml`** has a clever `tac releases.txt > releases.rev.txt 2>/dev/null || tail -r releases.txt > releases.rev.txt` portability dance — nice. Worth pulling into `_lib.sh` if reused.
+
+### Strengths noted
+
+- **Preflight job** in `release.yml:45–85` fails fast with named missing secrets — saves enormous debugging time. Excellent pattern.
+- **Idempotent release creation** at `release.yml:340–347`: if the release already exists (re-run after partial failure), update instead of erroring. Recoverable failures are the norm in Apple infra; this matters.
+- **`workflow_dispatch` with tag input** on `release.yml:27–32` allows manual re-runs without re-tagging — operationally crucial.
+- **DMG is signed AND notarized AND stapled separately from the .app inside it** (`release.yml:240–256`) — matches Apple's actual requirements (lots of pipelines miss this; many users see "damaged" DMG warnings as a result).
+- **Sparkle integration in `UpdateController.swift`** is textbook Sparkle 2: `SPUStandardUpdaterController(startingUpdater: true, ...)`, `canCheckForUpdates` mirrored via KVO publisher into a `@Published`, `[weak self]` in the sink, `@MainActor` on the class. Lane A can wire this in with a one-liner.
+- **`RELEASE.md`** is unusually complete for a first-release operator manual: covers one-time setup ordering (cert → app-pass → Sparkle → GH secrets → tap → CHANGEME), per-release procedure, **rollback** (§ 3), **manual notarization fallback** (§ 4), and useful diagnostic commands (§ 5). All four required RELEASE.md properties from the audit prompt are present.
+- **`dist/*.sh` discipline**: every script has `--help`, `--dry-run`, `set -euo pipefail`, sources `_lib.sh`, and is exercised by `test_scripts.sh`. The shared `_lib.sh` `run()` wrapper makes dry-run uniform.
+- **Concurrency group `release-${{ github.ref }}` with `cancel-in-progress: false`** (`release.yml:34–36`) prevents two concurrent releases of the same tag from racing the notarize step. Right call.
+
+### Overall verdict
+
+- [ ] APPROVED to merge
+- [ ] APPROVED with follow-ups (file follow-up tasks)
+- [x] BLOCKED — fix blockers and re-review
+
+**Rationale:** Blocker #1 (Sparkle private key in the repo) is a foundational trust failure for the entire Sparkle update mechanism — the only chain that lets Myna self-update securely. If a v0.1.0 build ships with the current public key, the update channel is permanently compromised: attackers can forge any update. The fix is small (regenerate keypair, replace the test-fixture key with a random one, rebuild Info.plist) but it must happen *before* any signed release reaches a user. Blocker #2 (appcast signing never succeeds in CI) means even setting aside the trust issue, the pipeline produces a half-released v0.1.0 (DMG attached, but Sparkle feed broken, tap not bumped). Both are mechanical fixes — total work is probably 30–60 minutes — but they must land before the next release attempt. Everything else (build succeeds, codesign flags correct, tap formulas almost right, RELEASE.md thorough, UpdateController clean) is in good shape.
+
 <!-- Security review will be appended here -->
 
 <!-- Final verification (real app launch) will be appended here -->
