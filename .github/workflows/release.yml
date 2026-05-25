@@ -444,6 +444,36 @@ jobs:
           rm -f "$CASK.bak"
           echo "--- updated cask ---"
           cat "$CASK"
+      - name: Update myna-daemon formula (source tarball SHA)
+        # The cask `depends_on formula: "myna-daemon"`. Homebrew resolves the
+        # formula's `url` to the GitHub-generated source tarball for v$VERSION
+        # and verifies it against `sha256`. We can only compute the real SHA
+        # *after* the GH release exists (the tarball is generated on-demand
+        # from the tag), so we do it here in the same job.
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          FORMULA="tap-repo/Formula/myna-daemon.rb"
+          if [ ! -f "$FORMULA" ]; then
+            mkdir -p tap-repo/Formula
+            cp source/tap/Formula/myna-daemon.rb "$FORMULA"
+          fi
+          TARBALL_URL="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/v${VERSION}.tar.gz"
+          echo "fetching $TARBALL_URL …"
+          # Retry a few times — GitHub sometimes lags generating the tarball
+          # for a fresh tag.
+          for i in 1 2 3 4 5; do
+            if curl -fsSL "$TARBALL_URL" -o /tmp/source.tar.gz; then break; fi
+            echo "  attempt $i failed; sleeping…" ; sleep 5
+          done
+          DAEMON_SHA=$(shasum -a 256 /tmp/source.tar.gz | awk '{print $1}')
+          echo "computed sha256: $DAEMON_SHA"
+          /usr/bin/sed -i.bak -E "s|^( *url )\"[^\"]+\"|\1\"$TARBALL_URL\"|" "$FORMULA"
+          /usr/bin/sed -i.bak -E "s/^( *sha256 )\"[^\"]+\"/\1\"$DAEMON_SHA\"/" "$FORMULA"
+          rm -f "$FORMULA.bak"
+          echo "--- updated formula ---"
+          head -20 "$FORMULA"
       - name: Commit + push tap
         run: |
           set -euo pipefail
@@ -451,9 +481,9 @@ jobs:
           git config user.email "release-bot@myna.dev"
           git config user.name  "Myna Release Bot"
           if git diff --quiet; then
-            echo "no cask changes; nothing to push"
+            echo "no tap changes; nothing to push"
             exit 0
           fi
-          git add Casks/myna.rb
+          git add -A
           git commit -m "myna ${{ needs.preflight.outputs.version }}"
           git push origin HEAD
