@@ -407,12 +407,17 @@ jobs:
           path: source
       - name: Resolve tap repo
         id: tap
+        env:
+          # Override at workflow-dispatch time if your tap lives elsewhere.
+          # Defaults to the generic shared tap convention (`<owner>/homebrew-tap`)
+          # so multiple projects can share one tap repo.
+          HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
         run: |
-          # The tap repo follows Homebrew convention: homebrew-<name>.
-          # Owner inferred from the source repo (works for forks too).
           owner="${GITHUB_REPOSITORY%%/*}"
+          repo="${HOMEBREW_TAP_REPO:-$owner/homebrew-tap}"
           echo "owner=$owner" >> "$GITHUB_OUTPUT"
-          echo "repo=$owner/homebrew-myna" >> "$GITHUB_OUTPUT"
+          echo "repo=$repo"   >> "$GITHUB_OUTPUT"
+          echo "Tap repo: $repo"
       - name: Check out tap (deploy key)
         uses: actions/checkout@v4
         with:
