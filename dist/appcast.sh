@@ -46,7 +46,7 @@ DMG_PATH="${DMG_PATH:-$ROOT/dist/out/Myna-$VERSION.dmg}"
 APPCAST_PATH="${APPCAST_PATH:-$ROOT/dist/out/appcast.xml}"
 MIN_SYSTEM_VERSION="${MIN_SYSTEM_VERSION:-13.0}"
 RELEASE_NOTES_URL="${RELEASE_NOTES_URL:-}"
-DOWNLOAD_BASE_URL="${DOWNLOAD_BASE_URL:-https://github.com/CHANGEME/myna/releases/download/v$VERSION}"
+DOWNLOAD_BASE_URL="${DOWNLOAD_BASE_URL:-https://github.com/PrerakGada/myna/releases/download/v$VERSION}"
 
 log "appcast.sh — version=$VERSION dmg=$DMG_PATH appcast=$APPCAST_PATH"
 
@@ -196,7 +196,7 @@ if [ ! -f "$APPCAST_PATH" ]; then
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
   <channel>
     <title>Myna</title>
-    <link>https://github.com/CHANGEME/myna</link>
+    <link>https://github.com/PrerakGada/myna</link>
     <description>Always-on local TTS companion for macOS</description>
     <language>en</language>
 $ITEM_XML

@@ -56,7 +56,7 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLName: dev.myna.urlscheme
             CFBundleURLSchemes: [myna]
-        SUFeedURL: "https://github.com/CHANGEME/myna/releases/download/appcast/appcast.xml"
+        SUFeedURL: "https://github.com/PrerakGada/myna/releases/download/appcast/appcast.xml"
         SUPublicEDKey: "lEoEYOBRVnzZC9bysaAYSRpEuXSDmd/FagSmzv2ozHg="
         SUEnableAutomaticChecks: YES
         SUEnableInstallerLauncherService: YES
