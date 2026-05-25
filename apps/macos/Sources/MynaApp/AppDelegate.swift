@@ -34,11 +34,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private(set) var hotkeys: HotkeyManager!
     private(set) var updates: UpdateController!
     private(set) var menuController: MenuBarController!
-    private var didBootstrap = false
+    /// @Published so the MenuBarExtra view re-renders when bootstrap
+    /// completes. Plain stored IUOs don't fire objectWillChange, so the
+    /// menu was permanently stuck on the "Myna initialising…" fallback.
+    @Published private(set) var didBootstrap = false
     private let log = Log(.app)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)  // belt-and-braces with LSUIElement.
+
+        // Diagnostic stderr lines complement the OSLog so the launch path
+        // is visible even when Console.app hasn't ingested the subsystem.
+        FileHandle.standardError.write(Data("[Myna] applicationDidFinishLaunching fired\n".utf8))
 
         // Don't initialise live audio/hotkey/poll machinery when the
         // binary is hosting an XCTest bundle — those side effects would
@@ -46,9 +53,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // the test launch with daemon-down retries, and contend with
         // the test cases' own AudioPlayer instances on the system
         // audio session.
-        if isRunningTests { return }
+        if isRunningTests {
+            FileHandle.standardError.write(Data("[Myna] isRunningTests=true → skipping bootstrap\n".utf8))
+            return
+        }
 
+        FileHandle.standardError.write(Data("[Myna] bootstrapping…\n".utf8))
         bootstrap()
+        FileHandle.standardError.write(Data("[Myna] bootstrap returned; registering hotkeys\n".utf8))
         hotkeys.register(handlers: [
             .speakSelectionFull: { [weak self] in self?.dispatcher.speakSelection(mode: .full) },
             .speakSelectionSummary: { [weak self] in self?.dispatcher.speakSelection(mode: .summary) },
@@ -57,6 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             .stop: { [weak self] in self?.dispatcher.stop() },
         ])
         menuController.start()
+        FileHandle.standardError.write(Data("[Myna] launch complete\n".utf8))
         log.info("Myna launched (bundle \(Bundle.main.bundleIdentifier ?? "?"))")
     }
 

@@ -30,7 +30,10 @@ private struct RootMenuBarView: View {
     @ObservedObject var appDelegate: AppDelegate
 
     var body: some View {
-        if let controller = appDelegate.menuController {
+        // Gate on the @Published `didBootstrap` flag so SwiftUI re-renders
+        // the menu when bootstrap() completes. Reading `menuController`
+        // alone wouldn't trigger an update because IUOs aren't @Published.
+        if appDelegate.didBootstrap, let controller = appDelegate.menuController {
             MenuBarView(controller: controller)
         } else {
             Text("Myna initialising…").padding()
@@ -45,7 +48,9 @@ private struct RootSettingsView: View {
     @ObservedObject var appDelegate: AppDelegate
 
     var body: some View {
-        if let viewModel = appDelegate.settings, let client = appDelegate.client {
+        if appDelegate.didBootstrap,
+           let viewModel = appDelegate.settings,
+           let client = appDelegate.client {
             SettingsView(viewModel: viewModel, client: client)
         } else {
             Text("Settings unavailable in this context.").padding()

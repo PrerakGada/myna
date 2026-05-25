@@ -27,9 +27,18 @@ public struct MenuBarView: View {
         registrySection
         Divider()
 
-        // Settings + about.
-        Button("Customize Shortcuts…") { controller.openSettings() }
-        Button("Settings…") { controller.openSettings() }
+        // Settings + about. SettingsLink (macOS 14+) is the only reliable way
+        // to open the Settings scene from an LSUIElement (accessory) app —
+        // the AppKit selector-based fallbacks no-op because there's no key
+        // window to receive `showSettingsWindow:`. On macOS 13 we still try
+        // the selector route via controller.openSettings().
+        if #available(macOS 14.0, *) {
+            SettingsLink { Text("Customize Shortcuts…") }
+            SettingsLink { Text("Settings…") }
+        } else {
+            Button("Customize Shortcuts…") { controller.openSettings() }
+            Button("Settings…") { controller.openSettings() }
+        }
         Button("Open Logs") { controller.openLogs() }
         CheckForUpdatesMenuItem(controller.updates)
         Divider()

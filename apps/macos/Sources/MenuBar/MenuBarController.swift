@@ -98,14 +98,18 @@ public final class MenuBarController: ObservableObject {
     }
 
     public func openSettings() {
-        // SwiftUI's standard Settings scene is shown via `showSettingsWindow:`
-        // on AppKit; we route via NSApp.
-        if #available(macOS 14.0, *) {
-            NSApp.activate()
-        } else {
-            NSApp.activate(ignoringOtherApps: true)
+        // Fallback path used only on macOS 13. macOS 14+ uses SettingsLink in
+        // MenuBarView, which is the only reliable way to open Settings from
+        // an LSUIElement (accessory) app — the selector chain `showSettingsWindow:`
+        // no-ops because there's no key window to receive the action.
+        //
+        // On 13 we still try the selector route, activating first so AppKit
+        // has a chance to find a responder.
+        NSApp.activate(ignoringOtherApps: true)
+        // Try both selector spellings (changed between Ventura and Sonoma).
+        if !NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
+            _ = NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
         }
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
     }
 
     public func openLogs() {
