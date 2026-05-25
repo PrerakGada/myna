@@ -212,3 +212,117 @@ Both 🔴 blockers fixed before any release went out. Caught pre-ship — no ins
 <!-- Security review will be appended here -->
 
 <!-- Final verification (real app launch) will be appended here -->
+
+---
+
+## Lane A Code Review — 2026-05-25
+
+**Auditor:** Auditor A (code-review), independent L0
+**Branch reviewed:** `native-app-rebuild` @ `44316b1` (Merge Lane A)
+**Scope:** All Swift code under `apps/macos/Sources/**` and `apps/macos/Tests/**`, against `API_CONTRACT.md` § 4, `TEST_PLAN.md` § 2, `NATIVE_APP_PROPOSAL.md` § 8 + CODE_REVIEW_CHECKLIST Lane A specifics.
+
+### Summary
+
+- **Modules reviewed:** Network (`DaemonClient`, `DaemonTypes`, `SynthesizeStream`), Audio (`AudioPlayer`, `TimePitchUnit`, `PlaybackQueue`), Input (`SelectionService`, `ChromeService`, `HotkeyManager`), URLScheme (`URLSchemeHandler`), MenuBar (`MenuBarController`, `MenuBarView`, `BirdIcon`), MynaApp (`AppDelegate`, `AppDispatcher`, `MynaApp`), Settings (5 files), Logging (`Log`, `LogViewerView`), Updates (`UpdateController`). 25 source files, 15 test files, 90 test functions.
+- **Build status:** ✅ `xcodebuild build` succeeds (Debug, macOS arm64-apple-macos13.0, `/tmp/audit-a-build`).
+- **Test status:** ✅ `xcodebuild test` — **90/90 passed**, 0 failures, 6.91s test runtime (well under the 30s gate).
+- **Lint status:** ✅ `swiftlint --strict` — 0 violations across 40 files. ✅ `swift-format lint --recursive --strict` — exit 0.
+- **Spec conformance (API_CONTRACT § 4):** Every public type in `DaemonTypes.swift` field-for-field matches the canonical definitions: `EngineInfo`, `DaemonInfo`, `DaemonConfig`, `RegistryItem`, `RegistryInfo`, `DaemonStatus`, `Voice`, `VoicesResponse`, `SynthesizeRequest`, `SynthesizedChunk`, `SynthesizeMode`. CodingKeys match wire JSON (`last_check_age_s`, `lang_code`, `chunk_chars`, `summary_model`, `age_s`, `chunk_chars`, `session_id`, `default`).
+- **TEST_PLAN § 2 coverage:** **100%** — every required `test_…` row is present (see §"Test coverage matrix" below for the line-by-line walk).
+
+### Test coverage matrix
+
+All 56 required tests from TEST_PLAN.md § 2 are present in the test suite. Manual cross-walk:
+- `DaemonClientTests`: 16/16 required + 2 extras (`test_voices_decodes_full_voices_fixture`, `test_announce_post_serializes_correctly` body check)
+- `AudioPlayerTests`: 14/14 required + clamp coverage (`test_speed_clamps_low/high`)
+- `PlaybackQueueTests`: 3/3 required + 3 extras (`test_locate_clamps_past_end/negative/empty_returns_nil`)
+- `SelectionServiceTests`: 4/4
+- `ChromeServiceTests`: 4/4 + 1 extra
+- `HotkeyManagerTests`: 3/3 required + 2 extras (`test_all_five_actions_present`, `test_action_rawvalues_match_v1_strings`)
+- `URLSchemeHandlerTests`: 13/13 required + 2 extras (`test_wrong_scheme_ignored`, `test_seek_missing_delta_ignored`)
+- `SettingsViewModelTests`: 4/4 required + 4 extras
+- `AppLifecycleTests`: 5/5
+
+### 🔴 Blockers
+
+**None.**
+
+### 🟡 Should-fix
+
+1. **`fatalError` reachable in production audio path** — `apps/macos/Sources/Audio/AudioPlayer.swift:341`. `mapBufferToFile(_:)` falls back to `fatalError("AudioPlayer: failed to materialize chunk for seeking: \(error)")` when temp-file I/O fails (disk full, sandbox denial, permissions, etc.). The checklist's universal "Correctness" gate is explicit: *"No `fatalError` / `try!` in production code paths."* This is only triggered on mid-chunk seeks (slow path) but is a real crash class on user machines. Fix: return `nil` from `mapBufferToFile`, propagate up to `scheduleChunk`, and treat as "skip this chunk and advance" (log via `Log(.audio).error`).
+
+2. **Info.plist version drift will break Sparkle updates** — `apps/macos/Resources/Info.plist:18` hardcodes `CFBundleShortVersionString = "1.0"` while `project.yml` declares `MARKETING_VERSION: "0.1.0"`. The built `.app/Contents/Info.plist` reads `1.0` (verified). When the released DMG ships claiming version `0.1.0` (per Lane B), Sparkle will compare `1.0 >= 0.1.0` and never offer the user any update. Fix: change Info.plist line 18 to `<string>$(MARKETING_VERSION)</string>` so the marketing version flows through.
+
+3. **`SUFeedURL` still contains `CHANGEME` placeholder** — `apps/macos/Resources/Info.plist:47` is `https://github.com/CHANGEME/myna/releases/download/appcast/appcast.xml`. Confirmed in built bundle's plist. Sparkle will silently fail to find the appcast on first launch. Strictly a Lane B follow-up if the upstream repo path isn't known yet, but it's a release-day surprise unless tracked.
+
+4. **`applicationWillTerminate` force-unwraps implicitly-unwrapped optionals** — `apps/macos/Sources/MynaApp/AppDelegate.swift:98-102` calls `menuController.stop()`, `hotkeys.disableAll()`, `player.stop()` on IUO properties (declared `var x: T!`). In production these are set in `applicationDidFinishLaunching`, but the `if isRunningTests { return }` early-exit on line 48 means the test-host process *can* reach `applicationWillTerminate` (e.g. on test bundle unload) with all three still `nil` → crash. Fix: use `menuController?.stop()` / `hotkeys?.disableAll()` / `player?.stop()`, or change properties to plain `Optional` with `if let`.
+
+5. **`SelectionService.captureSelectedText` restore not in `defer`** — `apps/macos/Sources/Input/SelectionService.swift:114-132`. Both the failure path (line 121) and the success path (line 126) call `pasteboard.restore(snapshot)` correctly, so the user's clipboard is preserved today. But the structure is fragile: any future early return (e.g., adding an `await` that can throw, a `guard` added between snapshot and restore) silently regresses the contract that the checklist explicitly calls out. Fix: hoist `defer { pasteboard.restore(snapshot) }` immediately after `let snapshot = pasteboard.saveSnapshot()` so the contract is structurally enforced.
+
+6. **DaemonError shape drifts slightly from spec** — `apps/macos/Sources/Network/DaemonTypes.swift:338` declares `case transport(String)` whereas API_CONTRACT.md § 4 specifies `case transport(Error)`. The deviation is defensible (Foundation's `URLError` isn't cleanly `Sendable`, and the spec demands `Sendable` on `DaemonError`), but it's an undocumented spec deviation per checklist gate. Fix: either update the contract doc with a "see implementation note" or wrap the underlying error in a `Sendable` wrapper so the spec form survives.
+
+7. **`VoicesResponse` adds an undeclared `engine` field** — `DaemonTypes.swift:155-163` exposes `let engine: String?` to read the `{"voices": [], "engine": "down"}` shape from the API_CONTRACT.md § 2 "engine down" branch. The field isn't in § 4's canonical type list. The field IS needed by the wire format, so the fix is to add it to API_CONTRACT.md § 4 rather than remove it from code. Track as a doc fix.
+
+### 🟢 Nits
+
+1. **`AudioPlayer` uses Mirror reflection from a test extension** — `apps/macos/Tests/AudioTests/AudioPlayerTests.swift:264-274` reflects into the private `timePitch` field to read `pitch`. Works, but a one-line `internal func _pitchForTesting() -> Float { timePitch.pitch }` in `AudioPlayer` would be cleaner and survive a Swift release that tightens Mirror semantics.
+
+2. **`PlaybackQueue` is `public` + `@unchecked Sendable`** — `apps/macos/Sources/Audio/PlaybackQueue.swift:40`. Only ever used inside `AudioPlayer` (MainActor-isolated), so the `@unchecked` is harmless. Demoting to `internal` would remove a foot-gun.
+
+3. **`AppDelegate.isRunningTests` belt-and-braces** — `apps/macos/Sources/MynaApp/AppDelegate.swift:93-96` correctly checks both `XCTestConfigurationFilePath` env var and `NSClassFromString("XCTestCase")`. The env-var trick is a known clever workaround; the dual check makes accidental matches in production essentially impossible (the user's normal launch will never have `XCTestCase` loaded into the address space). Documentation in the comment already explains why. No change needed.
+
+4. **`URLSchemeHandler` does not test `%FF`-style percent-garbage URL explicitly** — `URLSchemeHandlerTests.swift:116-122` covers `myna://` but not the spec's exact `myna://?%FF` example. Foundation's `URL(string:)` parses both cleanly and the parser hits the unknown-action drop, so this is just missing test coverage of a path that already works.
+
+5. **`HotkeyManager.invokeForTesting` is `public`** — `apps/macos/Sources/Input/HotkeyManager.swift:104`. Test-only API marked `public` for `@testable` access; should be `internal` (with `@testable import Myna` still working) or guarded by `#if DEBUG`.
+
+6. **`AppDispatcher.synthesizeAndPlay` silently logs failure** — `apps/macos/Sources/MynaApp/AppDispatcher.swift:86-107`. If the daemon is down or the synthesize stream throws, the user gets no UI feedback (no banner, no menu-bar warning). Spec's manual-acceptance step 3 says "speak hotkey shows alert" — that alert path is not implemented in this lane; tracked as follow-up.
+
+### Lane A specific checklist results
+
+- [x] `AudioPlayer` graph: `AVAudioPlayerNode` → `AVAudioUnitTimePitch` → `mainMixerNode` (`apps/macos/Sources/Audio/AudioPlayer.swift:268-269`) ✓
+- [x] Speed uses `.rate` on `AVAudioUnitTimePitch`, pitch stays 0 (`apps/macos/Sources/Audio/TimePitchUnit.swift:17-23`, `AudioPlayer.swift:178`) ✓
+- [x] Speed clamps to `[0.5, 2.0]` (`TimePitchUnit.swift:10-11, 29-31`, `AudioPlayer.swift:176`) ✓
+- [x] `SelectionService` restores prior pasteboard on both success and failure paths (`SelectionService.swift:121, 126`) — see 🟡 #5 for `defer` recommendation
+- [x] `ChromeService` URL validation rejects non-http/https (`ChromeService.swift:44-53`, test `test_url_validation_file_scheme_rejected`)
+- [x] `URLSchemeHandler` rejects unknown actions cleanly with logging (`URLSchemeHandler.swift:75-78, 128-129`)
+- [x] **`URLSchemeHandler` has NO arbitrary text-speak route** — verified by inspection (only `speak-selection`, `read-chrome`, `toggle-pause`, `stop`, `seek`, `speed` cases; default branch drops). No `exec`/`run`/`shell` either. Test `test_no_arbitrary_text_speak` proves `myna://speak?text=hello`, `myna://say?text=...`, `myna://announce?text=...` are all dropped.
+- [x] Seek clamp `[-3600, 3600]` (`URLSchemeHandler.swift:52, 117-118`) ✓
+- [x] Speed clamp `[0.5, 2.0]` (`URLSchemeHandler.swift:54, 121-122`) ✓
+- [x] Malformed URL doesn't crash (`URLSchemeHandlerTests.swift:116-122`)
+- [x] All 5 default hotkeys match `hammerspoon/myna.lua:143-149` exactly — cmd+alt+shift+ `s`/`a`/`r`/`space`/`.` (verified line-by-line against `HotkeyManager.swift:19-38`, test `test_default_shortcuts_match_v1_for_compatibility` enforces)
+- [x] MenuBar polls `/v2/status` via `client.status()` (`MenuBarController.swift:57`, `DaemonClient.swift:55-58`) — NOT v1 `/status`
+- [x] Settings → Daemon: URL validation rejects non-localhost (`SettingsViewModel.swift:129-141`, tests `test_daemon_url_validation_rejects_remote` and `test_setDaemonURL_rejects_remote_and_records_error`)
+- [x] `LSUIElement = true` (`Resources/Info.plist:34-35`, also `NSApp.setActivationPolicy(.accessory)` belt-and-braces in `AppDelegate.swift:40`)
+- [x] `myna://` registered in Info.plist (`Resources/Info.plist:19-29`, test `test_info_plist_declares_myna_url_scheme`)
+
+### Universal checklist results
+
+- [x] No `print()` in any source (`rg 'print\('` returned 0 matches in `Sources/**`)
+- [x] No `fatalError`/`try!` in production — **except** `AudioPlayer.swift:341` (see 🟡 #1)
+- [x] Three swiftlint-disabled `force_unwrapping` annotations — all for static URL literals (`DaemonClient.swift:14` for `127.0.0.1:8766`, `Log.swift:26` for `LogLevel` ordering, `SynthesizeStream.swift:190` for non-empty needle in `range(of:)`). All defensible.
+- [x] `SWIFT_STRICT_CONCURRENCY: complete` enabled in `project.yml:14`. All actors and `@MainActor` annotations verified across `AudioPlayer`, `AppDelegate`, `DaemonClient` (actor), `URLSchemeHandler`, `MenuBarController`, `AppDispatcher`. No data-race risks found.
+- [x] `URLSession` has timeouts (`DaemonClient.swift:36-39`: 30s request, 600s resource for streamed synth)
+- [x] File handles closed in `LogFileMirror.writeLocked` (`Log.swift:97-101`: `defer`-free but explicit `try? handle.close()` after every write)
+- [x] Combine cancellables stored in `UpdateController.swift:39, 60`
+- [x] All `[weak self]` in long-lived closures (`AudioPlayer.swift:296, 313, 348, 397`; `MenuBarController.swift:40, 90`)
+- [x] No real-network calls in unit tests (`MockURLProtocol` used throughout `DaemonClientTests`)
+- [x] No real-FS writes outside `temporaryDirectory` (`Settings` tests use `UserDefaults(suiteName:)` ephemeral suite; `LogTests` writes to `temporaryDirectory`)
+- [x] Total test runtime 6.91s, well under 30s gate.
+- [x] No `sleep()` for synchronization — `Task.sleep` used only inside polling helpers with predicates (`AudioPlayerTests.waitUntil` uses 30ms ticks against a deadline)
+
+### Strengths noted
+
+- **Spec discipline.** `DaemonTypes.swift` is a line-for-line transcription of `API_CONTRACT.md § 4`. CodingKeys explicitly match wire JSON. The `DaemonStatus` decoding tolerates the spec-declared diagnostic-only `v1_player` field by simply omitting it from the Swift type (`JSONDecoder` ignores unknown keys by default) — clever and matches the spec intent.
+- **Defensive parsing.** `MultipartChunkParser` (SynthesizeStream.swift) handles partial reads, split boundaries, and stray CRLFs — `test_synthesize_handles_partial_chunk_boundary` feeds it 1-byte-at-a-time and passes.
+- **Test isolation.** Every test that touches global state — `UserDefaults`, pasteboard, hotkeys, audio engine — either uses an ephemeral suite, a protocol-injected fake, or a `SendableBox` for concurrent state collection. Zero tests depend on the order they run in.
+- **Audio architecture.** The `playerNode → timePitch → mainMixer` graph is exactly the Apple Books / Overcast pattern. `TimePitchUnit` makes the contract structural by exposing `pitch` as read-only and clamping `rate` on every write. The `sessionToken` pattern in `AudioPlayer` cleanly drops stale buffer-completion callbacks after `stop()`/seek — a class of bug that would otherwise produce ghost progress jumps.
+- **Test-bootstrap discipline.** `AppDelegate.isRunningTests` correctly prevents the live audio engine and global hotkeys from grabbing system resources during XCTest runs. Without this, the test host would fight the user's running v1 Hammerspoon hotkeys and grab the shared audio session away from the test cases' own `AudioPlayer` instances.
+- **Security posture in URLSchemeHandler.** Both the implementation and the tests treat the URL scheme as an attack surface, not an API. `test_no_arbitrary_text_speak` directly enumerates the obvious adversarial inputs (`myna://speak?text=`, `myna://say?text=`, `myna://announce?text=`) and asserts they are silently dropped.
+
+### Overall verdict
+
+- [ ] APPROVED to merge
+- [x] **APPROVED with follow-ups** (file follow-up tasks for the seven 🟡 items)
+- [ ] BLOCKED — fix blockers and re-review
+
+No 🔴 blockers. The 🟡 items are real and should be tracked, but none of them prevent the lane from integrating: 🟡 #1 (`fatalError` in seek slow-path) only triggers on temp-file write failure during mid-chunk seek, 🟡 #2 and #3 (version + appcast URL) are deferrable to Lane B's release-pipeline polish window, 🟡 #4 (test-host terminate crash) only affects test-bundle unload not user-visible behavior, 🟡 #5 (`defer` for pasteboard restore) is hardening, 🟡 #6 and #7 are doc/spec reconciliation. Lane A is ship-quality for v0.1 once the follow-ups are tracked in `STATUS.md`.
