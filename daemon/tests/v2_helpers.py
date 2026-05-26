@@ -68,6 +68,9 @@ def make_client(config_overrides=None, registry_path=None, **state_overrides):
     from myna.v2_registry import V2Registry
 
     cfg = load_config()
+    # Disable karaoke for tests by default — make_client() callers that
+    # want to exercise the karaoke path should override via state_overrides.
+    cfg["karaoke"] = {"enabled": False}
     if config_overrides:
         cfg.update(config_overrides)
 

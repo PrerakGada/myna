@@ -20,6 +20,8 @@ from .config import load_config
 from .player import Player
 from .registry import Registry
 from .state import StateMachine
+from .karaoke.socket import make_karaoke_emitter
+from .karaoke.timing import WordTimingEstimator, samples_from_wav
 from .v2_registry import V2Registry
 from .voice_previews import (
     WARM_VOICES,
@@ -164,6 +166,9 @@ def create_app(config: dict | None = None) -> FastAPI:
     app.state.voice_preview_cache = VoicePreviewCache(
         engine_version=engine_version
     )
+    # Karaoke sidecar emitter (S12). Honors cfg["karaoke"]["enabled"];
+    # default True. Returns NullKaraokeEmitter if disabled.
+    app.state.karaoke = make_karaoke_emitter(cfg)
     app.state.synthesize = engine.synthesize
     app.state.engine_up = engine.engine_up
     app.state.summarize = summarize_mod.summarize
@@ -458,10 +463,27 @@ def create_app(config: dict | None = None) -> FastAPI:
                 b"--" + boundary + b"--\r\n"
             )
 
+        karaoke = app.state.karaoke
+        estimator = WordTimingEstimator(voice)
+
+        def _emit_chunk_karaoke(chunk_idx: int, chunk_text: str, wav_bytes: bytes):
+            """Send start + scheduled word events for one chunk."""
+            words = estimator.tokenize(chunk_text)
+            if not words:
+                return None
+            samples = samples_from_wav(wav_bytes)
+            timings = estimator.estimate(chunk_text, samples)
+            est_dur_ms = estimator.estimated_duration_ms(chunk_text, samples)
+            utt_id = f"{session_id}_{chunk_idx}"
+            karaoke.start(utt_id, chunk_text, words, est_dur_ms, voice)
+            karaoke.schedule_word_events(utt_id, timings)
+            return utt_id
+
         def _generator():
             # First chunk (already synthesized eagerly) — this is the
             # "first audio chunk written" edge per the state spec.
             app.state.machine.transition_to("speaking", request_id=session_id)
+            last_utt_id = _emit_chunk_karaoke(0, chunks[0], first_wav)
             yield _part_headers(0, total, chunks[0])
             yield first_wav
             yield b"\r\n"
@@ -482,6 +504,7 @@ def create_app(config: dict | None = None) -> FastAPI:
                     # closing JSON part reporting the actual count.
                     truncated = True
                     break
+                last_utt_id = _emit_chunk_karaoke(idx, chunks[idx], wav)
                 yield _part_headers(idx, total, chunks[idx])
                 yield wav
                 yield b"\r\n"
@@ -489,6 +512,8 @@ def create_app(config: dict | None = None) -> FastAPI:
             yield _final_part(yielded)
             # Stream done. Truncation -> error (so the UI can show it);
             # clean drain -> back to idle.
+            if last_utt_id is not None:
+                karaoke.stop(last_utt_id)
             if truncated:
                 app.state.machine.transition_to("error")
             else:
