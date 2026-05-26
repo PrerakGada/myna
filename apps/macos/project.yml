@@ -51,7 +51,7 @@ targets:
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSUIElement: YES   # menu-bar only, no Dock icon
         LSMinimumSystemVersion: "13.0"
-        NSHumanReadableCopyright: "© 2026 Rashid Azar. MIT licensed."
+        NSHumanReadableCopyright: "© 2026 Prerak Gada. MIT licensed."
         NSPrincipalClass: NSApplication
         NSAppleEventsUsageDescription: "Myna reads the URL of your front Chrome tab when you press the read-article shortcut."
         CFBundleURLTypes:

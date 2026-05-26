@@ -20,7 +20,7 @@ Once granted, a malicious copy of Myna (or a compromised update) could simulate 
 
 If you find a security issue, please **do not** open a public GitHub issue. Instead, email:
 
-**rashid@dpsca.in** with subject `myna-security`
+**prerak@engaze.in** with subject `myna-security`
 
 Or use GitHub's private vulnerability reporting on this repo.
 

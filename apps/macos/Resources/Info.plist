@@ -36,7 +36,7 @@
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Myna reads the URL of your front Chrome tab when you press the read-article shortcut.</string>
 	<key>NSHumanReadableCopyright</key>
-	<string>© 2026 Rashid Azar. MIT licensed.</string>
+	<string>© 2026 Prerak Gada. MIT licensed.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>SUEnableAutomaticChecks</key>

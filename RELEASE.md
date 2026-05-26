@@ -76,14 +76,14 @@ raw key encoded as base64 — identical format to Sparkle's tool).
 
 ### 1.5 Homebrew tap repository
 
-`release.yml`'s `tap-bump` job pushes to a separate `homebrew-myna` repo.
+`release.yml`'s `tap-bump` job pushes to a separate `homebrew-tap` repo.
 You create that repo once and point a deploy key at it.
 
 ```bash
-gh repo create rashid/homebrew-myna --public --description "Myna's Homebrew tap"
-git clone git@github.com:rashid/homebrew-myna.git ~/Developer/homebrew-myna
-cp -R tap/Casks tap/Formula ~/Developer/homebrew-myna/
-cd ~/Developer/homebrew-myna
+gh repo create PrerakGada/homebrew-tap --public --description "Myna's Homebrew tap"
+git clone git@github.com:PrerakGada/homebrew-tap.git ~/Developer/homebrew-tap
+cp -R tap/Casks tap/Formula ~/Developer/homebrew-tap/
+cd ~/Developer/homebrew-tap
 git add -A && git commit -m 'initial' && git push
 ```
 
@@ -92,7 +92,7 @@ Generate a deploy key with write access:
 ```bash
 ssh-keygen -t ed25519 -f ~/.ssh/myna-tap-deploy -N "" -C "myna-tap-deploy"
 gh repo deploy-key add ~/.ssh/myna-tap-deploy.pub \
-  --repo rashid/homebrew-myna \
+  --repo PrerakGada/homebrew-tap \
   --allow-write \
   --title "release.yml"
 # Copy the PRIVATE key (the file WITHOUT .pub) — you'll paste it into
@@ -108,7 +108,7 @@ Set these under **Repo → Settings → Secrets and variables → Actions**:
 |---|---|
 | `APPLE_DEVELOPER_ID_P12` | `base64 -i ~/Downloads/Myna-DeveloperID.p12 \| pbcopy` — paste that base64 string |
 | `APPLE_DEVELOPER_ID_P12_PASSWORD` | the password you set in step 1.1 |
-| `APPLE_DEVELOPER_ID_NAME` | `Developer ID Application: Rashid Azar (XXXXXXXXXX)` — find via `security find-identity -v -p codesigning` |
+| `APPLE_DEVELOPER_ID_NAME` | `Developer ID Application: MIND WEALTH (RC63N3VU27)` — find via `security find-identity -v -p codesigning` |
 | `APPLE_ID` | your Apple ID email (step 1.2) |
 | `APPLE_ID_APP_PASSWORD` | the app-specific password from step 1.2 |
 | `APPLE_TEAM_ID` | the 10-char team ID from step 1.3 |
@@ -161,7 +161,7 @@ When green, verify:
 
 ```bash
 gh release view v0.1.0
-brew tap rashid/myna
+brew tap PrerakGada/tap
 brew install --cask myna   # should install the brand-new DMG
 ```
 
@@ -188,7 +188,7 @@ git push --delete origin v0.1.0
 git tag -d v0.1.0
 
 # Revert the tap commit so users on `brew upgrade` don't pull the bad build.
-cd ~/Developer/homebrew-myna
+cd ~/Developer/homebrew-tap
 git log --oneline       # find the bad commit
 git revert <bad-sha>
 git push
@@ -216,12 +216,12 @@ etc.) you can run the full pipeline locally:
 VERSION=0.1.0 bash dist/build.sh
 
 # 2. Set Developer ID env, then sign
-export DEVELOPER_ID_APPLICATION="Developer ID Application: Rashid Azar (TEAMID)"
+export DEVELOPER_ID_APPLICATION="Developer ID Application: MIND WEALTH (RC63N3VU27)"
 bash dist/sign.sh
 
 # 3. Set Apple ID env, then notarize the .app
-export APPLE_ID="rashid@dpsca.in"
-export APPLE_TEAM_ID="TEAMID"
+export APPLE_ID="prerak@engaze.in"
+export APPLE_TEAM_ID="RC63N3VU27"
 export APPLE_ID_APP_PASSWORD="abcd-efgh-ijkl-mnop"
 bash dist/notarize.sh
 
@@ -237,7 +237,7 @@ TARGET=dist/out/Myna-0.1.0.dmg TARGET_SET=1 bash dist/notarize.sh
 # 6. Sign the Sparkle appcast entry
 export SPARKLE_EDDSA_PRIVATE_KEY="$(op read 'op://Private/Myna Sparkle EdDSA/password')"
 VERSION=0.1.0 \
-  DOWNLOAD_BASE_URL="https://github.com/rashid/myna/releases/download/v0.1.0" \
+  DOWNLOAD_BASE_URL="https://github.com/PrerakGada/myna/releases/download/v0.1.0" \
   bash dist/appcast.sh
 
 # 7. Publish the GH release manually
