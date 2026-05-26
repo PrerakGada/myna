@@ -35,21 +35,28 @@ public enum IconState: String, Sendable, Equatable {
 ///
 /// Priority:
 ///   1. Daemon down/unreachable      → .error
-///   2. Local player paused          → .paused
-///   3. Daemon state speaking/streaming → .speaking
-///   4. Local player playing         → .speaking
-///   5. Daemon state synthesizing    → .thinking
-///   6. Daemon emits "thinking" raw  → .thinking  (Lane B contract)
-///   7. Daemon emits "error" raw     → .error
-///   8. Otherwise                    → .idle
+///   2. Daemon reachable but engine down (engine_up == false) → .error
+///   3. Local player paused          → .paused
+///   4. Daemon state speaking/streaming → .speaking
+///   5. Local player playing         → .speaking
+///   6. Daemon state synthesizing    → .thinking
+///   7. Daemon emits "thinking" raw  → .thinking  (Lane B contract)
+///   8. Daemon emits "error" raw     → .error
+///   9. Otherwise                    → .idle
 public enum IconStateMapping {
     public static func compute(
         reachability: MenuBarController.DaemonReachability,
         daemonStateRaw: String?,
         isPlayerPaused: Bool,
-        isPlayerPlaying: Bool
+        isPlayerPlaying: Bool,
+        isEngineUp: Bool? = nil
     ) -> IconState {
         if reachability == .down { return .error }
+        // A reachable daemon can still report its engine is down — surface
+        // that as an error so the user doesn't see "idle" while playback
+        // would actually fail. When `isEngineUp` is nil (caller didn't
+        // supply it), preserve the legacy behavior of trusting reachability.
+        if isEngineUp == false { return .error }
         if isPlayerPaused { return .paused }
         if let raw = daemonStateRaw?.lowercased() {
             if raw == "error" { return .error }

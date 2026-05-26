@@ -10,13 +10,15 @@ final class IconStateTests: XCTestCase {
         reachability: MenuBarController.DaemonReachability = .up,
         daemonState: String? = nil,
         paused: Bool = false,
-        playing: Bool = false
+        playing: Bool = false,
+        engineUp: Bool? = nil
     ) -> IconState {
         IconStateMapping.compute(
             reachability: reachability,
             daemonStateRaw: daemonState,
             isPlayerPaused: paused,
-            isPlayerPlaying: playing
+            isPlayerPlaying: playing,
+            isEngineUp: engineUp
         )
     }
 
@@ -49,6 +51,28 @@ final class IconStateTests: XCTestCase {
 
     func test_no_signals_means_idle() {
         XCTAssertEqual(compute(), .idle)
+    }
+
+    func test_engine_up_false_maps_to_error_even_when_daemon_reachable() {
+        XCTAssertEqual(compute(engineUp: false), .error)
+        // engine_up=false dominates over any otherwise-positive daemon state
+        XCTAssertEqual(compute(daemonState: "idle", engineUp: false), .error)
+        XCTAssertEqual(compute(daemonState: "speaking", engineUp: false), .error)
+        XCTAssertEqual(compute(daemonState: "synthesizing", engineUp: false), .error)
+        XCTAssertEqual(compute(playing: true, engineUp: false), .error)
+    }
+
+    func test_engine_up_true_preserves_existing_state_mapping() {
+        XCTAssertEqual(compute(daemonState: "speaking", engineUp: true), .speaking)
+        XCTAssertEqual(compute(daemonState: "synthesizing", engineUp: true), .thinking)
+        XCTAssertEqual(compute(daemonState: "idle", engineUp: true), .idle)
+        XCTAssertEqual(compute(engineUp: true), .idle)
+    }
+
+    func test_engine_up_nil_preserves_legacy_behavior() {
+        // No engine_up signal: trust reachability + daemon state as before.
+        XCTAssertEqual(compute(daemonState: "speaking", engineUp: nil), .speaking)
+        XCTAssertEqual(compute(engineUp: nil), .idle)
     }
 
     func test_isAnimated_only_speaking_and_thinking() {

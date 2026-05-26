@@ -146,7 +146,8 @@ public final class MenuBarController: ObservableObject, CCToastActions {
             reachability: reachability,
             daemonStateRaw: status?.state.rawValue,
             isPlayerPaused: player.state == .paused,
-            isPlayerPlaying: player.state == .playing
+            isPlayerPlaying: player.state == .playing,
+            isEngineUp: status?.isEngineUp
         )
         lastRawIconState = raw
         if raw == iconState { return }
