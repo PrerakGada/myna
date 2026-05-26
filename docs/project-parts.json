@@ -1,0 +1,277 @@
+{
+  "schema_version": "1.0.0",
+  "generated_at": "2026-05-26T13:28:29Z",
+  "generated_by": "bmad-document-project workflow (exhaustive scan)",
+  "repository": {
+    "owner": "PrerakGada",
+    "name": "myna",
+    "url": "https://github.com/PrerakGada/myna",
+    "default_branch": "main",
+    "license": "MIT",
+    "repository_type": "multi-part",
+    "parts_count": 5,
+    "current_release": "v0.1.0",
+    "shipped_at": "2026-05-26"
+  },
+  "parts": [
+    {
+      "part_id": "macos",
+      "display_name": "Myna macOS app",
+      "project_type_id": "desktop",
+      "root_path": "apps/macos",
+      "purpose": "Native Swift menu-bar app — the user-facing product. Owns hotkeys, audio output, selection capture, settings UI, Sparkle update channel.",
+      "primary_language": "Swift",
+      "language_version": "6.0",
+      "platform_target": "macOS 13.0+ Apple Silicon",
+      "entry_point": "apps/macos/Sources/MynaApp/MynaApp.swift",
+      "build_system": "XcodeGen + xcodebuild",
+      "test_framework": "XCTest",
+      "test_count": 91,
+      "version_source": "apps/macos/project.yml:MARKETING_VERSION",
+      "version": "0.1.0",
+      "deliverable": "signed/notarized .app distributed as .dmg via GitHub Releases + Homebrew cask",
+      "key_libraries": [
+        { "name": "Sparkle", "version_constraint": "from 2.6.0", "purpose": "EdDSA-signed auto-update channel" },
+        { "name": "KeyboardShortcuts", "version_constraint": "from 2.0.0", "purpose": "User-recordable persistent hotkeys" }
+      ],
+      "docs": {
+        "architecture": "docs/architecture-macos.md",
+        "component_inventory": "docs/component-inventory-macos.md",
+        "development_guide": "docs/development-guide-macos.md"
+      }
+    },
+    {
+      "part_id": "daemon",
+      "display_name": "Myna Python daemon",
+      "project_type_id": "backend",
+      "root_path": "daemon",
+      "purpose": "FastAPI brain — extract / summarize / chunk / synthesize over loopback HTTP. Routes the v1 legacy and v2 streaming surfaces.",
+      "primary_language": "Python",
+      "language_version": ">=3.10 (3.13 in prod)",
+      "platform_target": "any POSIX (in practice macOS Apple Silicon)",
+      "entry_point": "daemon/myna/__main__.py",
+      "binds_address": "http://127.0.0.1:8766",
+      "build_system": "setuptools (pyproject.toml)",
+      "test_framework": "pytest",
+      "test_count": 94,
+      "version_source": "daemon/myna/__init__.py:__version__",
+      "version": "0.2.0",
+      "deliverable": "Homebrew formula `myna-daemon` with 40 declared PyPI resource blocks + rust build dep",
+      "key_libraries": [
+        { "name": "fastapi", "purpose": "HTTP framework" },
+        { "name": "uvicorn[standard]", "purpose": "ASGI server with httptools + uvloop" },
+        { "name": "httpx", "purpose": "HTTP client to Kokoro and Ollama" },
+        { "name": "trafilatura", "purpose": "Article extraction" },
+        { "name": "pydantic", "purpose": "v2 wire types (v2_types.py)" }
+      ],
+      "external_runtime_deps": [
+        { "name": "mlx-audio (Kokoro)", "address": "http://127.0.0.1:8765", "required": true, "purpose": "TTS synthesis" },
+        { "name": "Ollama (qwen3.5:4b)", "address": "http://127.0.0.1:11434", "required": false, "purpose": "Summarization; optional — only used in --summary mode" }
+      ],
+      "docs": {
+        "architecture": "docs/architecture-daemon.md",
+        "api_contracts": "docs/api-contracts-daemon.md",
+        "data_models": "docs/data-models-daemon.md",
+        "development_guide": "docs/development-guide-daemon.md"
+      }
+    },
+    {
+      "part_id": "site",
+      "display_name": "Myna marketing site",
+      "project_type_id": "web",
+      "root_path": "site",
+      "purpose": "Public-facing landing site for the brew install CTA, feature explainer, FAQ, roadmap.",
+      "primary_language": "TypeScript",
+      "language_version": "5.7.2",
+      "platform_target": "Vercel (Next.js framework preset)",
+      "entry_point": "site/app/page.tsx",
+      "build_system": "Next.js (next build)",
+      "test_framework": "none (gap)",
+      "test_count": 0,
+      "version_source": "site/package.json:version",
+      "version": "0.1.0",
+      "deliverable": "Vercel deploy",
+      "key_libraries": [
+        { "name": "next", "version_constraint": "^16.2.6", "purpose": "Framework + App Router" },
+        { "name": "react", "version_constraint": "^19.0.0", "purpose": "Runtime" },
+        { "name": "react-dom", "version_constraint": "^19.0.0", "purpose": "Renderer" },
+        { "name": "tailwindcss", "version_constraint": "^3.4.16", "purpose": "Styling" }
+      ],
+      "docs": {
+        "architecture": "docs/architecture-site.md",
+        "component_inventory": "docs/component-inventory-site.md",
+        "development_guide": "docs/development-guide-site.md"
+      }
+    },
+    {
+      "part_id": "cli",
+      "display_name": "Myna CLI",
+      "project_type_id": "cli",
+      "root_path": "cli",
+      "purpose": "Bash wrapper that POSTs to /speak — `myna <text>`, `pbpaste | myna`, `--summary`, `--speed`.",
+      "primary_language": "Bash",
+      "language_version": "3.2 portable (macOS default)",
+      "platform_target": "any POSIX",
+      "entry_point": "cli/myna",
+      "build_system": "n/a (single shell script)",
+      "test_framework": "covered indirectly via dist/tests/test_scripts.sh and daemon test_app.py",
+      "test_count": 0,
+      "version_source": "embedded in repo",
+      "version": "n/a",
+      "deliverable": "symlinked to ~/.local/bin/myna by install.sh",
+      "key_libraries": [
+        { "name": "curl", "purpose": "HTTP POST" },
+        { "name": "python3 -c (inline)", "purpose": "JSON encoding without jq dep" }
+      ],
+      "docs": {
+        "architecture": "docs/architecture-ops.md#9-cli-climyna",
+        "development_guide": "docs/development-guide-ops.md"
+      }
+    },
+    {
+      "part_id": "ops",
+      "display_name": "Release pipeline + install + LaunchAgents + legacy",
+      "project_type_id": "infra",
+      "root_path": "[dist/, tap/, .github/, launchagents/, hooks/, hammerspoon/, install.sh]",
+      "purpose": "Take a `git tag v*` push to a fully signed/notarized DMG + Sparkle appcast + Homebrew tap bump. Also: local-dev installer; Claude Code Stop hook integration; legacy v1 Hammerspoon module preserved.",
+      "primary_language": "Bash + YAML + Ruby + Lua + Python",
+      "language_version": "bash 3.2 portable + GitHub Actions YAML + Homebrew DSL",
+      "platform_target": "GitHub-hosted macOS runners + user's local Mac",
+      "entry_point": ".github/workflows/release.yml (triggered by git tag v*)",
+      "build_system": "n/a (orchestration)",
+      "test_framework": "dist/tests/test_scripts.sh (16/16 smoke tests pass)",
+      "test_count": 16,
+      "version_source": "matches Swift app release tag",
+      "version": "v0.1.0",
+      "deliverable": "signed/notarized DMG on GitHub Releases + Sparkle appcast.xml + Homebrew tap commits (cask + formula bumps)",
+      "subcomponents": [
+        { "name": "dist/", "purpose": "Release shell scripts (build, sign, notarize, dmg, appcast, _lib, smoke tests)" },
+        { "name": "tap/", "purpose": "Homebrew tap source (cask + formula; deployed-tap divergence in formula's resource blocks per HANDOFF.md)" },
+        { "name": ".github/workflows/", "purpose": "ci.yml + release.yml (9-job tag pipeline) + appcast.yml (manual rebuild)" },
+        { "name": "launchagents/", "purpose": "engine.plist.template + daemon.plist.template (KeepAlive, __HOME__ substitution)" },
+        { "name": "hooks/myna-cc-announce.py", "purpose": "Claude Code Stop hook → POST /announce" },
+        { "name": "hammerspoon/myna.lua", "purpose": "v1 legacy menu bar + hotkeys (322 LOC); kept side-by-side with the Swift app" },
+        { "name": "install.sh", "purpose": "Local-dev install: venv + symlink + Hammerspoon copy + CC hook JSON merge + LaunchAgent load" }
+      ],
+      "secrets_required": [
+        "APPLE_DEVELOPER_ID_P12",
+        "APPLE_DEVELOPER_ID_P12_PASSWORD",
+        "APPLE_DEVELOPER_ID_NAME",
+        "APPLE_ID",
+        "APPLE_ID_APP_PASSWORD",
+        "APPLE_TEAM_ID",
+        "KEYCHAIN_PASSWORD",
+        "SPARKLE_EDDSA_PRIVATE_KEY",
+        "TAP_DEPLOY_KEY"
+      ],
+      "docs": {
+        "architecture": "docs/architecture-ops.md",
+        "deployment_guide": "docs/deployment-guide.md",
+        "development_guide": "docs/development-guide-ops.md",
+        "contribution_guide": "docs/contribution-guide.md"
+      }
+    }
+  ],
+  "integration_points": [
+    {
+      "from": "macos",
+      "to": "daemon",
+      "type": "HTTP (JSON + multipart streaming)",
+      "address": "http://127.0.0.1:8766",
+      "endpoints": ["/v2/synthesize", "/v2/synthesize-summary", "/v2/extract", "/v2/summarize", "/v2/status", "/v2/voices", "/v2/health"],
+      "wire_types_source": "daemon/myna/v2_types.py (Pydantic)",
+      "wire_types_consumer": "apps/macos/Sources/Network/DaemonTypes.swift (Codable)",
+      "spec": "docs/native-app/API_CONTRACT.md",
+      "drift_report": "docs/api-contracts-daemon.md#spec-drift"
+    },
+    {
+      "from": "daemon",
+      "to": "mlx-audio (Kokoro)",
+      "type": "HTTP (Kokoro OpenAI-compatible)",
+      "address": "http://127.0.0.1:8765",
+      "endpoints": ["/v1/audio/speech", "/v1/voices (with fallback)"],
+      "external": true,
+      "required": true
+    },
+    {
+      "from": "daemon",
+      "to": "Ollama",
+      "type": "HTTP (Ollama native API)",
+      "address": "http://127.0.0.1:11434",
+      "endpoints": ["/api/generate"],
+      "external": true,
+      "required": false,
+      "note": "Only used in --summary mode; Myna installs and runs without Ollama"
+    },
+    {
+      "from": "cli",
+      "to": "daemon",
+      "type": "HTTP POST",
+      "address": "http://127.0.0.1:${MYNA_PORT:-8766}",
+      "endpoints": ["/speak (v1)"]
+    },
+    {
+      "from": "hooks/myna-cc-announce.py",
+      "to": "daemon",
+      "type": "HTTP POST",
+      "address": "http://127.0.0.1:8766",
+      "endpoints": ["/announce (v1)"]
+    },
+    {
+      "from": "hammerspoon/myna.lua",
+      "to": "daemon",
+      "type": "HTTP (v1 surface)",
+      "address": "http://127.0.0.1:8766",
+      "endpoints": ["/speak", "/pause", "/resume", "/stop", "/status", "/registry", "/play/{id}"]
+    },
+    {
+      "from": ".github/workflows/release.yml",
+      "to": "Apple notary",
+      "type": "xcrun notarytool submit (HTTPS)",
+      "external": true,
+      "auth": "APPLE_ID + APPLE_ID_APP_PASSWORD + APPLE_TEAM_ID"
+    },
+    {
+      "from": ".github/workflows/release.yml",
+      "to": "GitHub Releases",
+      "type": "gh release create + upload",
+      "external": true,
+      "auth": "GITHUB_TOKEN"
+    },
+    {
+      "from": ".github/workflows/release.yml",
+      "to": "PrerakGada/homebrew-tap",
+      "type": "git push via SSH deploy key",
+      "external": true,
+      "auth": "TAP_DEPLOY_KEY"
+    },
+    {
+      "from": "Sparkle (in shipped app)",
+      "to": "appcast GH Release",
+      "type": "HTTPS daily fetch",
+      "address": "https://github.com/PrerakGada/myna/releases/download/appcast/appcast.xml",
+      "external": true,
+      "signature_verification": "EdDSA against SUPublicEDKey baked into .app at build time"
+    }
+  ],
+  "external_runtime_dependencies": {
+    "kokoro_engine": {
+      "source": "mlx-audio (https://github.com/Blaizzy/mlx-audio)",
+      "install_path": "~/.venvs/mlx-audio",
+      "binds": "127.0.0.1:8765",
+      "kept_alive_by": "launchagents/dev.myna.engine.plist.template"
+    },
+    "ollama": {
+      "source": "https://ollama.com",
+      "binds": "127.0.0.1:11434",
+      "kept_alive_by": "ollama (separate brew service)",
+      "required_for": "--summary mode only"
+    }
+  },
+  "documentation": {
+    "index": "docs/index.md",
+    "format": "Markdown",
+    "scan_level": "exhaustive",
+    "scan_date": "2026-05-26"
+  }
+}
