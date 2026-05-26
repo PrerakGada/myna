@@ -105,6 +105,20 @@ if [ "${DRY_RUN:-0}" != "1" ]; then
           ln -s "Versions/Current/$alias" "$alias"
         fi
       done
+
+      # Xcode pre-signs Sparkle.framework during embed-and-sign and leaves a
+      # _CodeSignature/ at the framework root. That's valid for a flat bundle
+      # but FORBIDDEN for a versioned framework — for versioned frameworks
+      # the only valid location is Versions/<X>/_CodeSignature/. After our
+      # symlink normalization, the stale root _CodeSignature/ becomes
+      # "unsealed contents" and codesign refuses the root sign with:
+      #   "unsealed contents present in the root directory of an embedded framework"
+      # Drop it; signing Versions/B below produces a fresh, correctly-placed
+      # signature, and the framework root sign then has nothing extra to seal.
+      if [ -e "_CodeSignature" ]; then
+        log "sparkle normalize: removing stale root _CodeSignature/"
+        rm -rf "_CodeSignature"
+      fi
     )
 
     local ver_dir="$sparkle/Versions/$current_ver"
@@ -129,6 +143,10 @@ if [ "${DRY_RUN:-0}" != "1" ]; then
     done
 
     # Framework root — symlinks restored, should now be unambiguously a framework.
+    # Diagnostic: dump the framework root so future failures (if any) can
+    # immediately see what codesign sees. Cheap on CI, invaluable on regress.
+    log "sparkle root contents (debug):"
+    ls -la "$sparkle" 2>&1 | sed 's/^/  /'
     log "sparkle sign (root): $sparkle"
     # shellcheck disable=SC2086
     codesign --force --options runtime --timestamp \
