@@ -45,3 +45,4 @@ dist/out/
 *.provisionprofile
 .vercel
 *.profraw
+docs/native-app/last-ci-failure.log
