@@ -2,7 +2,7 @@
 # dist/sign.sh — codesign Myna.app with Developer ID, hardened runtime, timestamp.
 #
 # Inputs (env):
-#   DEVELOPER_ID_APPLICATION  — e.g. "Developer ID Application: Rashid Azar (TEAMID)"
+#   DEVELOPER_ID_APPLICATION  — e.g. "Developer ID Application: MIND WEALTH (RC63N3VU27)"
 #   KEYCHAIN_PATH             — optional; specific keychain holding the cert
 #   APP_PATH                  — optional; default dist/export/Myna.app
 #

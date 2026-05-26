@@ -29,9 +29,10 @@ final class LogTests: XCTestCase {
     }
 
     func test_log_categories_cover_all_subsystems() {
+        // v0.2 added .updates (WhatsNew) and .menubar (toast/state machine).
         XCTAssertEqual(
             Set(LogCategory.allCases),
-            [.app, .audio, .network, .input, .urlscheme, .settings]
+            [.app, .audio, .network, .input, .urlscheme, .settings, .updates, .menubar]
         )
     }
 

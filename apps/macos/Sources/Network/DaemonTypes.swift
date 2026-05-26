@@ -115,19 +115,44 @@ public struct DaemonStatus: Codable, Sendable, Equatable {
     public let daemon: DaemonInfo
     public let config: DaemonConfig
     public let registry: RegistryInfo
+    /// Optional top-level mirror of `engine.status == "up"`. Some daemon
+    /// builds expose `engine_up` directly on the status response; older
+    /// ones only have the nested `engine.status` string. Prefer this
+    /// when present, fall back to `engine.status` otherwise (see
+    /// `isEngineUp`).
+    public let engineUp: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case state
+        case engine
+        case daemon
+        case config
+        case registry
+        case engineUp = "engine_up"
+    }
+
+    /// Canonical "engine reachable" flag combining the optional top-level
+    /// `engine_up` and the nested `engine.status` string. Returns `false`
+    /// if the daemon explicitly says the engine is down.
+    public var isEngineUp: Bool {
+        if let engineUp { return engineUp }
+        return engine.status.lowercased() == "up"
+    }
 
     public init(
         state: DaemonState,
         engine: EngineInfo,
         daemon: DaemonInfo,
         config: DaemonConfig,
-        registry: RegistryInfo
+        registry: RegistryInfo,
+        engineUp: Bool? = nil
     ) {
         self.state = state
         self.engine = engine
         self.daemon = daemon
         self.config = config
         self.registry = registry
+        self.engineUp = engineUp
     }
 }
 

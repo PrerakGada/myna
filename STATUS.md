@@ -81,7 +81,7 @@ You went to bed with a 322-line Hammerspoon script. You wake up with:
    - In Keychain Access, find it, right-click → Export `.p12` (set a password)
    - `base64 -i ~/Downloads/DeveloperID.p12 | pbcopy` — paste into GitHub secret `APPLE_DEVELOPER_ID_P12`
    - The p12 password → secret `APPLE_DEVELOPER_ID_P12_PASSWORD`
-   - The identity name (`security find-identity -v -p codesigning` → "Developer ID Application: Rashid Azar (TEAMID)") → secret `APPLE_DEVELOPER_ID_NAME`
+   - The identity name (`security find-identity -v -p codesigning` → e.g. "Developer ID Application: MIND WEALTH (RC63N3VU27)") → secret `APPLE_DEVELOPER_ID_NAME`
 
 2. **Generate an app-specific password.**
    - https://appleid.apple.com → Sign-In and Security → App-Specific Passwords → +
@@ -98,13 +98,13 @@ You went to bed with a 322-line Hammerspoon script. You wake up with:
 4. **Set `KEYCHAIN_PASSWORD`.** Any random string: `openssl rand -base64 24 | pbcopy`. → GH secret.
 
 5. **Create the Homebrew tap repo.**
-   - `gh repo create rashid/homebrew-myna --public`
+   - `gh repo create PrerakGada/homebrew-tap --public`
    - Mirror `tap/Casks/` + `tap/Formula/` into it (one-time push)
    - Generate a deploy key with write access — public half on the tap repo, private half → GH secret `TAP_DEPLOY_KEY`
 
 6. **Replace `CHANGEME` with your GitHub handle.** Three places:
    ```bash
-   sed -i '' 's/CHANGEME/rashid/g' \
+   sed -i '' 's/CHANGEME/PrerakGada/g' \
      apps/macos/project.yml \
      dist/appcast.sh \
      tap/Casks/myna.rb \

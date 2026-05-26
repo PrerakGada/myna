@@ -16,13 +16,38 @@ struct MynaApp: App {
         MenuBarExtra {
             RootMenuBarView(appDelegate: appDelegate)
         } label: {
-            BirdIcon.image
+            RootMenuBarLabel(appDelegate: appDelegate)
         }
         .menuBarExtraStyle(.menu)
 
         Settings {
             RootSettingsView(appDelegate: appDelegate)
         }
+    }
+}
+
+/// Bird label for the MenuBarExtra. Renders the state-driven SwiftUI
+/// bird while bootstrap is complete; falls back to the static SF Symbol
+/// during launch / test-host.
+private struct RootMenuBarLabel: View {
+    @ObservedObject var appDelegate: AppDelegate
+
+    var body: some View {
+        if appDelegate.didBootstrap, let controller = appDelegate.menuController {
+            BootedLabel(controller: controller)
+        } else {
+            BirdIcon.image
+        }
+    }
+}
+
+private struct BootedLabel: View {
+    @ObservedObject var controller: MenuBarController
+    var body: some View {
+        BirdIconView(
+            state: controller.iconState,
+            suppressAnimation: PowerMonitor.shared.shouldSuppressAnimation
+        )
     }
 }
 
@@ -48,10 +73,15 @@ private struct RootSettingsView: View {
     @ObservedObject var appDelegate: AppDelegate
 
     var body: some View {
-        if appDelegate.didBootstrap,
-           let viewModel = appDelegate.settings,
-           let client = appDelegate.client {
-            SettingsView(viewModel: viewModel, client: client)
+        // Pass the running AudioPlayer in as the AudioDuckable so the S09
+        // voice preview can duck main playback to 30% during a sample.
+        // SettingsView.audioSink is optional, so passing nil in contexts
+        // where the player isn't ready is also safe.
+        let isReady = appDelegate.didBootstrap
+        let viewModel = appDelegate.settings
+        let client = appDelegate.client
+        if isReady, let viewModel, let client {
+            SettingsView(viewModel: viewModel, client: client, audioSink: appDelegate.player)
         } else {
             Text("Settings unavailable in this context.").padding()
         }

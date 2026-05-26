@@ -107,9 +107,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         self.menuController = MenuBarController(
             client: client,
             player: player,
-            updates: updates
+            updates: updates,
+            settings: settings
         )
+        // Late-attach the menu controller into the dispatcher so the
+        // recents/now-reading state populates when speakSelection runs.
+        self.dispatcher.attach(menuController: self.menuController)
         self.didBootstrap = true
+        // First bootstrap → mark first_run_complete so the next minor
+        // bump triggers the What's New dialog (S10 AC #7).
+        WhatsNewLauncher.shared.markFirstRunComplete()
+        // Show the What's New dialog if it's due (minor bump since
+        // last_seen_version). Runs ~immediately after bootstrap returns
+        // so the menu bar has time to come up first.
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            _ = WhatsNewLauncher.shared.showIfDue()
+        }
     }
 
     /// True when the host binary is running an XCTest bundle. We use

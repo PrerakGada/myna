@@ -66,6 +66,31 @@ final class DaemonClientTests: XCTestCase {
         XCTAssertEqual(status.config.voice, "af_heart")
         XCTAssertEqual(status.registry.count, 1)
         XCTAssertEqual(status.registry.items.first?.id, "abcd1234")
+        // Fixture has no top-level engine_up → optional decodes to nil but
+        // the derived isEngineUp falls back to the nested engine.status.
+        XCTAssertNil(status.engineUp)
+        XCTAssertTrue(status.isEngineUp)
+    }
+
+    func test_status_decodes_top_level_engine_up_when_present() async throws {
+        let body = Data(
+            #"""
+            {
+              "state": "idle",
+              "engine_up": false,
+              "engine": {"url": "x", "status": "down", "model": "m", "last_check_age_s": 0.0},
+              "daemon": {"version": "0.2.0", "uptime_s": 0.0, "pid": 1},
+              "config": {"voice": "v", "speed": 1.0, "lang_code": "a", "chunk_chars": 1, "summary_model": "x"},
+              "registry": {"count": 0, "items": []}
+            }
+            """#.utf8)
+        MockURLProtocol.enqueue { req in
+            (.make(url: req.url!, status: 200), body)  // swiftlint:disable:this force_unwrapping
+        }
+        let client = makeClient()
+        let status = try await client.status()
+        XCTAssertEqual(status.engineUp, false)
+        XCTAssertFalse(status.isEngineUp)
     }
 
     // MARK: voices

@@ -10,7 +10,7 @@
 #   APPLE_DEVELOPER_ID_P12            base64 of the Developer ID p12 export
 #                                      `base64 -i DeveloperID.p12 | pbcopy`
 #   APPLE_DEVELOPER_ID_P12_PASSWORD   password used when exporting the p12
-#   APPLE_DEVELOPER_ID_NAME           e.g. "Developer ID Application: Rashid Azar (TEAMID)"
+#   APPLE_DEVELOPER_ID_NAME           e.g. "Developer ID Application: MIND WEALTH (RC63N3VU27)"
 #   APPLE_ID                          your Apple ID email
 #   APPLE_ID_APP_PASSWORD             app-specific password (appleid.apple.com)
 #   APPLE_TEAM_ID                     10-char team ID

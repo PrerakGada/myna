@@ -19,6 +19,10 @@ public final class AppDispatcher: URLSchemeDispatching {
     private let selection: SelectionService
     private let chrome: ChromeService
     private let settings: SettingsViewModel
+    /// MenuBar controller for recording recent-items + "now reading"
+    /// state (S06). Optional so URL-scheme tests can construct the
+    /// dispatcher without a full menu bar.
+    private weak var menuController: MenuBarController?
     private let log = Log(.app)
 
     public init(
@@ -26,13 +30,19 @@ public final class AppDispatcher: URLSchemeDispatching {
         player: AudioPlayer,
         selection: SelectionService,
         chrome: ChromeService,
-        settings: SettingsViewModel
+        settings: SettingsViewModel,
+        menuController: MenuBarController? = nil
     ) {
         self.client = client
         self.player = player
         self.selection = selection
         self.chrome = chrome
         self.settings = settings
+        self.menuController = menuController
+    }
+
+    public func attach(menuController: MenuBarController) {
+        self.menuController = menuController
     }
 
     // MARK: - URLSchemeDispatching
@@ -93,6 +103,10 @@ public final class AppDispatcher: URLSchemeDispatching {
             mode: mode,
             sessionId: UUID().uuidString
         )
+        // Record into recents (S06 Recent submenu). Title is the URL
+        // host or the first ~60 chars of the text if no URL.
+        let recentTitle = computeRecentTitle(text: text, url: url)
+        menuController?.recordNowReading(title: recentTitle, voice: settings.voice)
         do {
             for try await chunk in client.synthesize(req) {
                 if let buffer = await decodeWAV(chunk.wavData) {
@@ -104,6 +118,19 @@ public final class AppDispatcher: URLSchemeDispatching {
         } catch {
             log.error("synthesize failed: \(error)")
         }
+    }
+
+    /// Best-effort short title for the recents row. Per Sally's spec:
+    /// titles truncate at 38 chars + ellipsis (RecentItem handles that;
+    /// here we just supply the raw string).
+    private func computeRecentTitle(text: String?, url: String?) -> String {
+        if let url = url, let parsed = URL(string: url) {
+            return parsed.host ?? url
+        }
+        if let text = text {
+            return String(text.prefix(60))
+        }
+        return "(untitled)"
     }
 
     /// Decode a WAV blob into an AVAudioPCMBuffer by writing to a
