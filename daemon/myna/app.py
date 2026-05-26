@@ -17,6 +17,7 @@ from .config import load_config
 from .player import Player
 from .registry import Registry
 from .state import StateMachine
+from .v2_registry import V2Registry
 from .v2_types import (
     V2ConfigInfo,
     V2DaemonInfo,
@@ -24,8 +25,13 @@ from .v2_types import (
     V2ExtractReq,
     V2ExtractResp,
     V2Health,
+    V2RegistryActionResp,
+    V2RegistryAnnounceReq,
+    V2RegistryAnnounceResp,
+    V2RegistryEntry,
     V2RegistryInfo,
     V2RegistryItem,
+    V2RegistryListResp,
     V2Status,
     V2SummarizeReq,
     V2SummarizeResp,
@@ -93,6 +99,7 @@ def create_app(config: dict | None = None) -> FastAPI:
     app.state.player = Player()
     app.state.registry = Registry()
     app.state.machine = StateMachine()
+    app.state.v2_registry = V2Registry()
     app.state.synthesize = engine.synthesize
     app.state.engine_up = engine.engine_up
     app.state.summarize = summarize_mod.summarize
@@ -569,5 +576,90 @@ def create_app(config: dict | None = None) -> FastAPI:
             version=__version__,
             engine_up=_check_engine_cached(),
         )
+
+    # ----- v2 registry (CC-hook toast) -----
+
+    @app.post(
+        "/v2/registry/announce",
+        response_model=V2RegistryAnnounceResp,
+    )
+    def v2_registry_announce(
+        req: V2RegistryAnnounceReq,
+    ) -> V2RegistryAnnounceResp:
+        entry = app.state.v2_registry.announce(
+            id=req.id,
+            source=req.source,
+            project_id=req.project_id,
+            title=req.title,
+            ttl_s=req.ttl_s,
+            audio_path=req.audio_path,
+        )
+        return V2RegistryAnnounceResp(
+            ok=True,
+            announced_at_ms=entry["announced_at_ms"],
+        )
+
+    @app.get("/v2/registry/list", response_model=V2RegistryListResp)
+    def v2_registry_list() -> V2RegistryListResp:
+        snap = app.state.v2_registry.snapshot()
+        return V2RegistryListResp(
+            pending=[V2RegistryEntry(**e) for e in snap["pending"]],
+            played=[V2RegistryEntry(**e) for e in snap["played"]],
+        )
+
+    @app.post(
+        "/v2/registry/play/{entry_id}",
+        response_model=V2RegistryActionResp,
+        response_model_exclude_none=True,
+    )
+    def v2_registry_play(entry_id: str) -> V2RegistryActionResp:
+        entry = app.state.v2_registry.mark_played(entry_id)
+        if entry is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"ok": False, "reason": "not_found"},
+            )
+        # Playback is intentionally fire-and-forget here: the Swift app owns
+        # the audio engine. The daemon's role is to acknowledge the play
+        # action and stamp played_at_ms. If a future revision wants the
+        # daemon to stream the registered audio file, it can re-enter the
+        # synth pipeline here.
+        return V2RegistryActionResp(ok=True)
+
+    @app.post(
+        "/v2/registry/dismiss/{entry_id}",
+        response_model=V2RegistryActionResp,
+        response_model_exclude_none=True,
+    )
+    def v2_registry_dismiss(entry_id: str) -> V2RegistryActionResp:
+        entry = app.state.v2_registry.mark_dismissed(entry_id)
+        if entry is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"ok": False, "reason": "not_found"},
+            )
+        # Audio cleanup: if the entry referenced a file, unlink it now.
+        # Best-effort; missing or already-deleted files are ignored.
+        audio_path = entry.get("audio_path")
+        if audio_path:
+            try:
+                pathlib.Path(audio_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+        return V2RegistryActionResp(ok=True)
+
+    @app.delete(
+        "/v2/registry/{entry_id}",
+        response_model=V2RegistryActionResp,
+        response_model_exclude_none=True,
+    )
+    def v2_registry_delete(entry_id: str) -> V2RegistryActionResp:
+        removed = app.state.v2_registry.delete(entry_id)
+        if not removed:
+            raise HTTPException(
+                status_code=404,
+                detail={"ok": False, "reason": "not_found"},
+            )
+        return V2RegistryActionResp(ok=True)
 
     return app
