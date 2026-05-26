@@ -47,6 +47,7 @@ jobs:
     runs-on: macos-15
     outputs:
       version: ${{ steps.v.outputs.version }}
+      has_tap_key: ${{ steps.tap.outputs.has_tap_key }}
     steps:
       - uses: actions/checkout@v4
       - name: Resolve version from tag
@@ -82,7 +83,23 @@ jobs:
             printf 'See .github/workflows/release.yml header for setup.\n'
             exit 1
           fi
-          echo "All required secrets present."
+          echo "All required required-secrets present."
+      - name: Detect optional TAP_DEPLOY_KEY
+        # TAP_DEPLOY_KEY is optional — only needed if you've set up a
+        # homebrew-myna tap repo. Without it we skip the tap-bump job
+        # cleanly so the rest of the release (build → sign → notarize
+        # → DMG → GH Release → Sparkle appcast) still ships.
+        id: tap
+        env:
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+        run: |
+          if [ -n "${TAP_DEPLOY_KEY:-}" ]; then
+            echo "has_tap_key=true"  >> "$GITHUB_OUTPUT"
+            echo "TAP_DEPLOY_KEY present — tap-bump job will run."
+          else
+            echo "has_tap_key=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::TAP_DEPLOY_KEY not set — skipping Homebrew tap bump. Set the secret + create the homebrew-myna tap repo to enable."
+          fi
 
   build-universal:
     name: Build universal binary
@@ -297,12 +314,29 @@ jobs:
             --dir dist/out \
             --repo "$GITHUB_REPOSITORY" \
           || echo "no existing appcast — will create a fresh one"
+      - name: Install Sparkle sign_update + ensure real OpenSSL
+        # macOS runners ship LibreSSL as /usr/bin/openssl, which cannot do raw
+        # Ed25519 signing via `pkeyutl -rawin`. Per AUDIT_REPORT.md Lane B 🔴 #2,
+        # appcast signing would silently fail without either Sparkle's
+        # sign_update binary OR Homebrew's openssl@3. Install both for belt-and-
+        # braces; dist/appcast.sh prefers sign_update when present.
+        run: |
+          # Pinned to a known-good Sparkle release; bump as Sparkle updates.
+          SPARKLE_VER="2.6.4"
+          curl -fsSL "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VER}/Sparkle-${SPARKLE_VER}.tar.xz" \
+            -o /tmp/sparkle.tar.xz
+          mkdir -p sparkle
+          tar -xJf /tmp/sparkle.tar.xz -C sparkle
+          ls sparkle/bin/sign_update
+          brew install openssl@3 || brew upgrade openssl@3 || true
       - name: Sign + append appcast item
         env:
           SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
           VERSION: ${{ needs.preflight.outputs.version }}
           DOWNLOAD_BASE_URL: ${{ format('https://github.com/{0}/releases/download/v{1}', github.repository, needs.preflight.outputs.version) }}
           RELEASE_NOTES_URL: ${{ format('https://github.com/{0}/releases/tag/v{1}', github.repository, needs.preflight.outputs.version) }}
+          SIGN_UPDATE_BIN: ${{ github.workspace }}/sparkle/bin/sign_update
+          OPENSSL_BIN: /opt/homebrew/opt/openssl@3/bin/openssl
         run: bash dist/appcast.sh
       - name: Upload appcast.xml
         uses: actions/upload-artifact@v4
@@ -366,18 +400,24 @@ jobs:
     name: Bump Homebrew cask
     runs-on: macos-15
     needs: [preflight, appcast, release]
+    if: needs.preflight.outputs.has_tap_key == 'true'
     steps:
       - uses: actions/checkout@v4
         with:
           path: source
       - name: Resolve tap repo
         id: tap
+        env:
+          # Override at workflow-dispatch time if your tap lives elsewhere.
+          # Defaults to the generic shared tap convention (`<owner>/homebrew-tap`)
+          # so multiple projects can share one tap repo.
+          HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
         run: |
-          # The tap repo follows Homebrew convention: homebrew-<name>.
-          # Owner inferred from the source repo (works for forks too).
           owner="${GITHUB_REPOSITORY%%/*}"
+          repo="${HOMEBREW_TAP_REPO:-$owner/homebrew-tap}"
           echo "owner=$owner" >> "$GITHUB_OUTPUT"
-          echo "repo=$owner/homebrew-myna" >> "$GITHUB_OUTPUT"
+          echo "repo=$repo"   >> "$GITHUB_OUTPUT"
+          echo "Tap repo: $repo"
       - name: Check out tap (deploy key)
         uses: actions/checkout@v4
         with:
@@ -404,6 +444,36 @@ jobs:
           rm -f "$CASK.bak"
           echo "--- updated cask ---"
           cat "$CASK"
+      - name: Update myna-daemon formula (source tarball SHA)
+        # The cask `depends_on formula: "myna-daemon"`. Homebrew resolves the
+        # formula's `url` to the GitHub-generated source tarball for v$VERSION
+        # and verifies it against `sha256`. We can only compute the real SHA
+        # *after* the GH release exists (the tarball is generated on-demand
+        # from the tag), so we do it here in the same job.
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          FORMULA="tap-repo/Formula/myna-daemon.rb"
+          if [ ! -f "$FORMULA" ]; then
+            mkdir -p tap-repo/Formula
+            cp source/tap/Formula/myna-daemon.rb "$FORMULA"
+          fi
+          TARBALL_URL="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/v${VERSION}.tar.gz"
+          echo "fetching $TARBALL_URL …"
+          # Retry a few times — GitHub sometimes lags generating the tarball
+          # for a fresh tag.
+          for i in 1 2 3 4 5; do
+            if curl -fsSL "$TARBALL_URL" -o /tmp/source.tar.gz; then break; fi
+            echo "  attempt $i failed; sleeping…" ; sleep 5
+          done
+          DAEMON_SHA=$(shasum -a 256 /tmp/source.tar.gz | awk '{print $1}')
+          echo "computed sha256: $DAEMON_SHA"
+          /usr/bin/sed -i.bak -E "s|^( *url )\"[^\"]+\"|\1\"$TARBALL_URL\"|" "$FORMULA"
+          /usr/bin/sed -i.bak -E "s/^( *sha256 )\"[^\"]+\"/\1\"$DAEMON_SHA\"/" "$FORMULA"
+          rm -f "$FORMULA.bak"
+          echo "--- updated formula ---"
+          head -20 "$FORMULA"
       - name: Commit + push tap
         run: |
           set -euo pipefail
@@ -411,9 +481,9 @@ jobs:
           git config user.email "release-bot@myna.dev"
           git config user.name  "Myna Release Bot"
           if git diff --quiet; then
-            echo "no cask changes; nothing to push"
+            echo "no tap changes; nothing to push"
             exit 0
           fi
-          git add Casks/myna.rb
+          git add -A
           git commit -m "myna ${{ needs.preflight.outputs.version }}"
           git push origin HEAD

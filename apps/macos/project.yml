@@ -42,6 +42,12 @@ targets:
     info:
       path: Resources/Info.plist
       properties:
+        # CFBundleShortVersionString must flow from MARKETING_VERSION (0.1.0)
+        # so Sparkle can detect "newer version available" — XcodeGen otherwise
+        # writes literal "1.0" and Sparkle never offers updates.
+        # Per AUDIT_REPORT.md Lane A 🟡 #2.
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSUIElement: YES   # menu-bar only, no Dock icon
         LSMinimumSystemVersion: "13.0"
         NSHumanReadableCopyright: "© 2026 Rashid Azar. MIT licensed."
@@ -50,8 +56,8 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLName: dev.myna.urlscheme
             CFBundleURLSchemes: [myna]
-        SUFeedURL: "https://github.com/CHANGEME/myna/releases/download/appcast/appcast.xml"
-        SUPublicEDKey: "i+MLgN/F6W8JB9ToiLVRCdFvPkLhv1R21BdqrkIF8K0="
+        SUFeedURL: "https://github.com/PrerakGada/myna/releases/download/appcast/appcast.xml"
+        SUPublicEDKey: "lEoEYOBRVnzZC9bysaAYSRpEuXSDmd/FagSmzv2ozHg="
         SUEnableAutomaticChecks: YES
         SUEnableInstallerLauncherService: YES
     entitlements:
@@ -80,6 +86,10 @@ targets:
       - path: Tests
         excludes:
           - "**/.DS_Store"
+    resources:
+      - path: ../../docs/native-app/fixtures
+        type: folder
+        destinationFilters: [macOS]
     dependencies:
       - target: Myna
     settings:

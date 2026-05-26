@@ -6,14 +6,14 @@ class MynaDaemon < Formula
   include Language::Python::Virtualenv
 
   desc "Myna's Python HTTP daemon (chunking, extract, summarize, /synthesize)"
-  homepage "https://github.com/CHANGEME/myna"
-  url "https://github.com/CHANGEME/myna/archive/refs/tags/v0.1.0.tar.gz"
+  homepage "https://github.com/PrerakGada/myna"
+  url "https://github.com/PrerakGada/myna/archive/refs/tags/v0.1.0.tar.gz"
   # release.yml does NOT bump this formula on every release — it bumps the cask
   # only. Daemon updates ride the cask's homepage release; bump this manually
   # when daemon code changes meaningfully.
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "MIT"
-  head "https://github.com/CHANGEME/myna.git", branch: "main"
+  head "https://github.com/PrerakGada/myna.git", branch: "main"
 
   depends_on "python@3.13"
 
