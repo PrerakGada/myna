@@ -724,7 +724,6 @@ def create_app(config: dict | None = None) -> FastAPI:
             project_id=req.project_id,
             title=req.title,
             ttl_s=req.ttl_s,
-            audio_path=req.audio_path,
         )
         return V2RegistryAnnounceResp(
             ok=True,
@@ -770,14 +769,11 @@ def create_app(config: dict | None = None) -> FastAPI:
                 status_code=404,
                 detail={"ok": False, "reason": "not_found"},
             )
-        # Audio cleanup: if the entry referenced a file, unlink it now.
-        # Best-effort; missing or already-deleted files are ignored.
-        audio_path = entry.get("audio_path")
-        if audio_path:
-            try:
-                pathlib.Path(audio_path).unlink(missing_ok=True)
-            except OSError:
-                pass
+        # No audio file is associated with v0.2 CC-hook entries (the field
+        # was removed for security; see v2_registry.py docstring). If a
+        # future revision attaches a daemon-owned audio file, cleanup
+        # belongs here — and ONLY for paths the daemon itself created,
+        # never paths supplied by an HTTP caller.
         return V2RegistryActionResp(ok=True)
 
     @app.delete(

@@ -23,6 +23,13 @@ Schema (see docs/v0.2-plan/01-feature-stories.md S08):
         "dismissed_at_ms":  int | None,
     }
 
+Note: an earlier draft included an `audio_path` field carried from the
+hook. It was removed (post-audit, v0.2 security fix lane): the field was
+unauthenticated user input that the dismiss handler passed to
+`Path(...).unlink()`, an arbitrary-file-delete primitive. v0.2 has no
+caller that writes audio for the CC hook — playback is synthesised
+on-demand from `title` via /v2/registry/play/{id}.
+
 `pending` filter: not dismissed, not played, and not yet TTL-expired.
 `played` filter: played_at_ms != None, capped at last 5 by played_at_ms desc.
 """
@@ -110,7 +117,6 @@ class V2Registry:
         project_id: str,
         title: str,
         ttl_s: int,
-        audio_path: Optional[str] = None,
     ) -> dict:
         # Replace any existing entry with the same id (latest write wins).
         self._entries = [e for e in self._entries if e.get("id") != id]
@@ -123,7 +129,6 @@ class V2Registry:
             "ttl_s": int(ttl_s),
             "played_at_ms": None,
             "dismissed_at_ms": None,
-            "audio_path": audio_path,
         }
         self._entries.append(entry)
         self._save()

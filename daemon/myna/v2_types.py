@@ -121,7 +121,10 @@ class V2RegistryAnnounceReq(BaseModel):
     project_id: str
     title: str
     ttl_s: int = 600
-    audio_path: Optional[str] = None
+    # Note: `audio_path` was intentionally dropped — it allowed an
+    # unauthenticated arbitrary-file delete via /dismiss. Pydantic
+    # silently ignores extra keys by default, so first-party callers
+    # that still send it will not error.
 
 
 class V2RegistryAnnounceResp(BaseModel):
@@ -138,7 +141,6 @@ class V2RegistryEntry(BaseModel):
     ttl_s: int
     played_at_ms: Optional[int] = None
     dismissed_at_ms: Optional[int] = None
-    audio_path: Optional[str] = None
 
 
 class V2RegistryListResp(BaseModel):

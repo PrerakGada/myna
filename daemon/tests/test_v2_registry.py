@@ -176,11 +176,18 @@ def test_dismiss_route_404_for_unknown(tmp_path):
     assert r.status_code == 404
 
 
-def test_dismiss_route_unlinks_audio(tmp_path):
-    audio = tmp_path / "u.wav"
-    audio.write_bytes(b"RIFF...")
+def test_dismiss_does_not_touch_caller_supplied_paths(tmp_path):
+    """Security: an attacker posting an `audio_path` along with announce must
+    not be able to coerce dismiss into deleting that file.
+
+    The field was removed entirely (Pydantic by default ignores extra
+    keys, so the announce still succeeds), and dismiss no longer touches
+    the filesystem.
+    """
+    sentinel = tmp_path / "must_not_be_deleted.txt"
+    sentinel.write_text("hello")
     client, fp, app = make_client(registry_path=tmp_path / "r.json")
-    client.post(
+    r = client.post(
         "/v2/registry/announce",
         json={
             "id": "u_audio",
@@ -188,13 +195,20 @@ def test_dismiss_route_unlinks_audio(tmp_path):
             "project_id": "p",
             "title": "t",
             "ttl_s": 600,
-            "audio_path": str(audio),
+            # Sneaky extra field — must be silently ignored, never stored.
+            "audio_path": str(sentinel),
         },
     )
-    assert audio.exists()
-    r = client.post("/v2/registry/dismiss/u_audio")
     assert r.status_code == 200
-    assert not audio.exists()
+    # And the registry entry must not have persisted audio_path either.
+    entry = app.state.v2_registry.get("u_audio")
+    assert entry is not None
+    assert "audio_path" not in entry
+    # Dismiss does NOT touch the file even though the announce body
+    # included a path pointing at it.
+    d = client.post("/v2/registry/dismiss/u_audio")
+    assert d.status_code == 200
+    assert sentinel.exists(), "dismiss must not delete caller-supplied paths"
 
 
 def test_delete_route(tmp_path):
