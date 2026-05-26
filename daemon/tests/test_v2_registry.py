@@ -4,6 +4,7 @@ Spec: docs/v0.2-plan/01-feature-stories.md S08.
 """
 
 import json
+import threading
 import time
 
 import pytest
@@ -229,6 +230,54 @@ def test_delete_route(tmp_path):
     # Second delete -> 404
     r2 = client.delete("/v2/registry/u_x")
     assert r2.status_code == 404
+
+
+def test_concurrent_announce_preserves_all_entries_and_valid_json(tmp_path):
+    """Concurrency: N threads each call announce() with a distinct id.
+    All N entries must be present in the in-memory snapshot AND the
+    on-disk JSON must be parseable (not corrupt). Pre-fix, the disk file
+    could be a half-written {.tmp → replace} race; the in-memory list
+    could also lose entries when two threads' read-modify-writes
+    interleaved.
+    """
+    path = tmp_path / "concurrent.json"
+    r = V2Registry(path=path)
+    N = 50
+    barrier = threading.Barrier(N)
+    errors: list[BaseException] = []
+
+    def worker(i):
+        try:
+            barrier.wait()
+            r.announce(
+                id=f"u_{i:03d}",
+                source="cc",
+                project_id="p",
+                title=f"entry {i}",
+                ttl_s=600,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(N)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == [], f"workers raised: {errors}"
+
+    # All entries present in-memory
+    snap = r.snapshot()
+    assert len(snap["pending"]) == N, (
+        f"expected {N} pending, got {len(snap['pending'])}"
+    )
+    assert {e["id"] for e in snap["pending"]} == {f"u_{i:03d}" for i in range(N)}
+
+    # On-disk JSON parses cleanly and matches
+    on_disk = json.loads(path.read_text())
+    assert isinstance(on_disk, list)
+    assert len(on_disk) == N
+    assert {e["id"] for e in on_disk} == {f"u_{i:03d}" for i in range(N)}
 
 
 def test_play_route_triggers_synthesis_from_title(tmp_path):

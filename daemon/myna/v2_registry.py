@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import threading
 import time
 from typing import Optional
 
@@ -65,6 +66,12 @@ class V2Registry:
         self._clock = clock
         self._played_cap = played_cap
         self._entries: list[dict] = []
+        # FastAPI's sync route handlers run in a threadpool; concurrent
+        # /v2/registry/{announce,play,dismiss,delete} calls can interleave
+        # their read-modify-write of self._entries and racing _save() can
+        # leave registry.json half-written. Serialize the entire mutator
+        # sequence (including the disk write) under this lock.
+        self._lock = threading.Lock()
         self._load()
 
     # -------- persistence --------
@@ -98,6 +105,10 @@ class V2Registry:
         self._entries = cleaned
 
     def _save(self) -> None:
+        # Caller must hold self._lock. We snapshot self._entries into JSON
+        # while no other mutator can change it, then write-then-replace
+        # atomically. (.replace() is POSIX atomic; the lock just protects
+        # the in-memory list from concurrent mutation while we serialize.)
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(self.path.suffix + ".tmp")
@@ -118,51 +129,56 @@ class V2Registry:
         title: str,
         ttl_s: int,
     ) -> dict:
-        # Replace any existing entry with the same id (latest write wins).
-        self._entries = [e for e in self._entries if e.get("id") != id]
-        entry = {
-            "id": id,
-            "source": source,
-            "project_id": project_id,
-            "title": title[:200],
-            "announced_at_ms": self._clock(),
-            "ttl_s": int(ttl_s),
-            "played_at_ms": None,
-            "dismissed_at_ms": None,
-        }
-        self._entries.append(entry)
-        self._save()
-        return entry
+        with self._lock:
+            # Replace any existing entry with the same id (latest write wins).
+            self._entries = [e for e in self._entries if e.get("id") != id]
+            entry = {
+                "id": id,
+                "source": source,
+                "project_id": project_id,
+                "title": title[:200],
+                "announced_at_ms": self._clock(),
+                "ttl_s": int(ttl_s),
+                "played_at_ms": None,
+                "dismissed_at_ms": None,
+            }
+            self._entries.append(entry)
+            self._save()
+            return entry
 
     def mark_played(self, entry_id: str) -> Optional[dict]:
-        for e in self._entries:
-            if e.get("id") == entry_id:
-                e["played_at_ms"] = self._clock()
-                self._save()
-                return e
-        return None
+        with self._lock:
+            for e in self._entries:
+                if e.get("id") == entry_id:
+                    e["played_at_ms"] = self._clock()
+                    self._save()
+                    return dict(e)
+            return None
 
     def mark_dismissed(self, entry_id: str) -> Optional[dict]:
-        for e in self._entries:
-            if e.get("id") == entry_id:
-                e["dismissed_at_ms"] = self._clock()
-                self._save()
-                return e
-        return None
+        with self._lock:
+            for e in self._entries:
+                if e.get("id") == entry_id:
+                    e["dismissed_at_ms"] = self._clock()
+                    self._save()
+                    return dict(e)
+            return None
 
     def delete(self, entry_id: str) -> bool:
-        before = len(self._entries)
-        self._entries = [e for e in self._entries if e.get("id") != entry_id]
-        if len(self._entries) != before:
-            self._save()
-            return True
-        return False
+        with self._lock:
+            before = len(self._entries)
+            self._entries = [e for e in self._entries if e.get("id") != entry_id]
+            if len(self._entries) != before:
+                self._save()
+                return True
+            return False
 
     def get(self, entry_id: str) -> Optional[dict]:
-        for e in self._entries:
-            if e.get("id") == entry_id:
-                return dict(e)
-        return None
+        with self._lock:
+            for e in self._entries:
+                if e.get("id") == entry_id:
+                    return dict(e)
+            return None
 
     # -------- queries --------
 
@@ -178,15 +194,22 @@ class V2Registry:
         return True
 
     def snapshot(self) -> dict:
-        now_ms = self._clock()
-        pending = [dict(e) for e in self._entries if self._is_pending(e, now_ms)]
+        # Take the lock for read-side too: a concurrent mutator could be
+        # mid-`self._entries = [...]` reassignment and we'd otherwise see
+        # a torn view (mutators rebuild the list rather than mutating in
+        # place for the dismiss/delete codepaths).
+        with self._lock:
+            now_ms = self._clock()
+            pending = [
+                dict(e) for e in self._entries if self._is_pending(e, now_ms)
+            ]
+            played_src = [
+                dict(e)
+                for e in self._entries
+                if e.get("played_at_ms") is not None
+            ]
         # Sort pending oldest-first so UI can render in announce order
         pending.sort(key=lambda e: e["announced_at_ms"])
-        played = [
-            dict(e)
-            for e in self._entries
-            if e.get("played_at_ms") is not None
-        ]
-        played.sort(key=lambda e: e["played_at_ms"] or 0, reverse=True)
-        played = played[: self._played_cap]
+        played_src.sort(key=lambda e: e["played_at_ms"] or 0, reverse=True)
+        played = played_src[: self._played_cap]
         return {"pending": pending, "played": played}
