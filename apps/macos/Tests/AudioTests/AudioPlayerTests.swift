@@ -23,16 +23,11 @@ final class AudioPlayerTests: XCTestCase {
         // strict-concurrency violation CI catches. Base setUp() is a
         // no-op anyway, so omitting it has no effect on test semantics.
         //
-        // CI-skip: GitHub macos-15 runners have no audio output device,
-        // so AVAudioEngine.start() succeeds but the AVAudioPlayerNode
-        // pipeline never delivers completion callbacks → tests hang →
-        // CI's per-test watchdog kills the process. These tests are
-        // valid + green on real Apple Silicon Macs (Prerak runs them
-        // locally before pushing); we just can't gate CI on them.
-        try XCTSkipIf(
-            ProcessInfo.processInfo.environment["CI"] != nil,
-            "AudioPlayerTests skipped on CI — runners lack audio output device."
-        )
+        // NB: CI runners (macos-15) crash this whole suite — AVAudioEngine
+        // there has no output device, the player node never delivers
+        // completion callbacks, and xctest's watchdog terminates the
+        // process. The CI workflow skips this suite at the xcodebuild
+        // level (`-skip-testing`) so we don't see those crashes.
         subscriptions.removeAll()
     }
 
