@@ -51,6 +51,14 @@ public final class PillViewModel: ObservableObject {
         didSet { handleHoverChange() }
     }
 
+    /// True when the pill is in "always visible" mode (user toggled
+    /// on in Settings). Surfaced so the view can render an idle
+    /// state (bird + "Myna" label, no waveform) when nothing is
+    /// playing but the pill is still on screen. Set by
+    /// PillController.syncVisibility — view-model does not read
+    /// UserDefaults directly to keep this file dependency-light.
+    @Published public private(set) var isAlwaysVisible: Bool = false
+
     // MARK: - derived display data
 
     /// What to show in the pill. May be nil — view falls back to
@@ -117,7 +125,21 @@ public final class PillViewModel: ObservableObject {
         applyPlayerState(player.state)
     }
 
+    /// True when the pill is on screen but the player is idle. Drives
+    /// the "Myna" idle chip layout (no waveform, no Stop button).
+    public var isIdle: Bool {
+        !isSpeaking
+    }
+
     // MARK: - intents
+
+    /// Push the always-visible flag from PillController. Idempotent;
+    /// the @Published wrapper handles change notification.
+    public func setAlwaysVisible(_ value: Bool) {
+        if isAlwaysVisible != value {
+            isAlwaysVisible = value
+        }
+    }
 
     /// User clicked Play/Pause in the expanded view.
     public func togglePlayPause() {
@@ -167,8 +189,11 @@ public final class PillViewModel: ObservableObject {
         case .idle:
             isSpeaking = false
             isPaused = false
-            // Stopping clears pinned & hovering — the pill is going
-            // away, no reason to keep state stale.
+            // Stopping clears pinned & hovering when the pill is
+            // going away. In always-visible mode the pill stays on
+            // screen, so keeping the user's pin choice would be
+            // surprising on the *next* speech session — clear it
+            // either way and let hover re-expand if the user wants.
             isPinned = false
             isHovering = false
             recomputeExpanded()
@@ -210,10 +235,16 @@ public final class PillViewModel: ObservableObject {
     /// Preview-only escape hatch. Not for production code paths.
     /// Forces published booleans so SwiftUI previews can render a
     /// specific visual state without driving the real AudioPlayer.
-    public func _previewForceState(isSpeaking: Bool, isExpanded: Bool, paused: Bool) {
+    public func _previewForceState(
+        isSpeaking: Bool,
+        isExpanded: Bool,
+        paused: Bool,
+        alwaysVisible: Bool = false
+    ) {
         self.isSpeaking = isSpeaking
         self.isExpanded = isExpanded
         self.isPaused = paused
+        self.isAlwaysVisible = alwaysVisible
     }
     #endif
 }

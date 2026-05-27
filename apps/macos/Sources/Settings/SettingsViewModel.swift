@@ -31,6 +31,10 @@ public enum SettingsKey: String, CaseIterable, Sendable {
     /// don't want to surprise users with a 4-finger swipe that
     /// silently jumps chunks.
     case trackpadGesturesEnabled = "dev.myna.app.trackpadGesturesEnabled"
+    /// v0.2.x: keep the floating pill on screen whenever Myna is
+    /// running, not just while speaking. Default OFF — Wispr-Flow-style
+    /// always-visible chip is a power-user opt-in.
+    case pillAlwaysVisible = "dev.myna.app.pillAlwaysVisible"
 }
 
 /// Built-in defaults — must mirror the daemon's config defaults so the
@@ -52,6 +56,11 @@ public enum SettingsDefaults {
     public static let ccToastsEnabled: Bool = true
     /// v0.2: trackpad gestures default OFF. See SettingsKey docs.
     public static let trackpadGesturesEnabled: Bool = false
+    /// v0.2.x: floating-pill always-visible default OFF. The
+    /// existing "Show floating pill while speaking" master toggle
+    /// still gates everything; this only widens *when* the pill
+    /// appears, never overrides the master kill switch.
+    public static let pillAlwaysVisible: Bool = false
 }
 
 /// Thin wrapper over UserDefaults so tests can inject an ephemeral
@@ -134,6 +143,12 @@ public final class SettingsViewModel: ObservableObject {
     @Published public var trackpadGesturesEnabled: Bool {
         didSet { store.set(.trackpadGesturesEnabled, trackpadGesturesEnabled) }
     }
+    /// v0.2.x: keep the floating pill visible whenever Myna is
+    /// running, regardless of playback state. Read by PillController
+    /// when deciding visibility (see PillController.syncVisibility).
+    @Published public var pillAlwaysVisible: Bool {
+        didSet { store.set(.pillAlwaysVisible, pillAlwaysVisible) }
+    }
 
     /// Most recent validation error for the daemon URL field. Settings
     /// UI displays this inline. Nil = currently valid.
@@ -155,6 +170,8 @@ public final class SettingsViewModel: ObservableObject {
         self.ccToastsEnabled = store.bool(.ccToastsEnabled) ?? SettingsDefaults.ccToastsEnabled
         self.trackpadGesturesEnabled =
             store.bool(.trackpadGesturesEnabled) ?? SettingsDefaults.trackpadGesturesEnabled
+        self.pillAlwaysVisible =
+            store.bool(.pillAlwaysVisible) ?? SettingsDefaults.pillAlwaysVisible
     }
 
     /// Validate that the given URL string is localhost-only (we never
@@ -218,6 +235,7 @@ public final class SettingsViewModel: ObservableObject {
         toastChimeEnabled = SettingsDefaults.toastChimeEnabled
         ccToastsEnabled = SettingsDefaults.ccToastsEnabled
         trackpadGesturesEnabled = SettingsDefaults.trackpadGesturesEnabled
+        pillAlwaysVisible = SettingsDefaults.pillAlwaysVisible
         daemonURLError = nil
     }
 

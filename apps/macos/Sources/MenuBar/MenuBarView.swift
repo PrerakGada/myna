@@ -29,6 +29,12 @@ public struct MenuBarView: View {
     /// session, not per section render.
     @State private var voices: [Voice] = []
 
+    /// Mirror of the floating-pill master toggle so the popover can
+    /// hide the "Reset pill position" row when the pill is disabled.
+    /// @AppStorage gives us free UserDefaults binding without a
+    /// dependency on PillController / SettingsViewModel.
+    @AppStorage("dev.myna.app.showFloatingPill") private var showFloatingPill: Bool = true
+
     // Section open/closed state. SwiftUI persists this across poll-driven
     // re-renders, which is the whole point of the v0.2.1 redesign.
     @State private var voicesExpanded = false
@@ -58,6 +64,9 @@ public struct MenuBarView: View {
             }
             if !model.recents.isEmpty {
                 recentsSection(items: model.recents)
+            }
+            if showFloatingPill {
+                resetPillPositionRow
             }
             Divider()
                 .overlay(Color.white.opacity(0.08))
@@ -266,6 +275,38 @@ public struct MenuBarView: View {
                 }
             }
         }
+    }
+
+    // MARK: - reset pill position
+
+    /// Tiny inline row that resets the floating-pill's persisted
+    /// frame and re-snaps it to bottom-centre of the screen-under-
+    /// cursor. Posts a Notification so MenuBarView doesn't need to
+    /// hold a reference to PillController (which would require
+    /// plumbing through MynaApp — outside this lane's allow-list).
+    @ViewBuilder
+    private var resetPillPositionRow: some View {
+        HoverableRow(
+            cornerRadius: 6,
+            horizontalPadding: 8,
+            verticalPadding: 6,
+            action: {
+                NotificationCenter.default.post(
+                    name: PillController.resetPositionNotification,
+                    object: nil
+                )
+            },
+            content: {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.uturn.left.circle")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(PopoverDesign.bodyColor.opacity(0.8))
+                    Text("Reset pill position")
+                        .font(PopoverDesign.bodyFont)
+                        .foregroundStyle(PopoverDesign.bodyColor)
+                }
+            }
+        )
     }
 
     // MARK: - voice loading

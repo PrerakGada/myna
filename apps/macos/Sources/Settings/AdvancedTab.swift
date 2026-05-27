@@ -23,7 +23,9 @@ public struct AdvancedTab: View {
         Form {
             Section("Floating pill") {
                 Toggle("Show floating pill while speaking", isOn: $showFloatingPill)
-                Text("A small chip appears at the bottom of your active display when Myna is speaking. Hover to expand into a mini-player.")
+                Toggle("Keep floating pill always visible", isOn: $viewModel.pillAlwaysVisible)
+                    .disabled(!showFloatingPill)
+                Text("A small chip appears at the bottom of your active display when Myna is speaking. Hover to expand into a mini-player. Turn on \u{201C}always visible\u{201D} to keep the chip on screen even when nothing is playing — drag it anywhere and Myna will remember.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
