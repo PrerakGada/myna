@@ -84,11 +84,11 @@ public struct GesturesTab: View {
                     )
                     .foregroundStyle(.secondary)
 
-                    Text("• Click gestures need a Force Touch trackpad.")
+                    Text("• Click gestures need a click while 4 fingers are touching.")
                     Text(
-                        "  Pre-2015 trackpads don't report a click pressure stage, "
-                        + "so the click and double-click gestures will not fire on "
-                        + "that hardware. Taps and double-taps still work."
+                        "  Press the trackpad firmly enough to actuate the click "
+                        + "(the haptic feedback / audible click). Force Touch "
+                        + "is not required — a normal click works on any trackpad."
                     )
                     .foregroundStyle(.secondary)
                 }

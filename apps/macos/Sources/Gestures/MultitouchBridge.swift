@@ -275,14 +275,27 @@ public final class MultitouchBridge {
         registerFn(dev, multitouchCContactCallback)
         startFn(dev, 0)
 
-        // 4. Global pressure NSEvent monitor.
-        pressureMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.pressure]) { [weak self] event in
-            // Hop to main actor — see file header.
-            let stage = event.stage
+        // 4. Global click NSEvent monitor.
+        //
+        // We originally listened to `.pressure` — but those events only
+        // fire for Force Touch (the *deep press* used by Look Up / Quick
+        // Look). A normal trackpad click is `.leftMouseDown` with no
+        // pressure event behind it, so users doing a regular 4-finger
+        // click got nothing. Switching to `.leftMouseDown` also
+        // automatically extends click gestures to pre-2015 trackpads
+        // that have no Force Touch sensor at all.
+        //
+        // The recognizer expects a "stage" — we synthesize stage=2 to
+        // satisfy its existing `stage >= clickStage` filter without
+        // changing the type. The state machine treats every `.leftMouseDown`
+        // that arrives while 4 fingers are touching as the click gesture;
+        // clicks with fewer than 4 fingers are ignored in the `.idle`
+        // branch so we don't intercept normal app clicks.
+        pressureMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 let ts = ProcessInfo.processInfo.systemUptime
-                self.recognizer.onPressure(GesturePressureEvent(timestamp: ts, stage: stage))
+                self.recognizer.onPressure(GesturePressureEvent(timestamp: ts, stage: 2))
                 self.scheduleFlushIfNeeded()
             }
         }
