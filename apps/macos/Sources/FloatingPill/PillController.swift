@@ -2,14 +2,35 @@
 //
 // Responsibilities:
 //   - lazily create the FloatingPillWindow + SwiftUI hosting view
-//   - show/hide the window based on AudioPlayer.state
-//   - reposition to bottom-center of the active screen on:
-//       * playback start
-//       * pill expand/collapse (the frame size changes)
-//       * NSApplication.didChangeScreenParametersNotification
-//       * NSWorkspace.didActivateApplicationNotification
-//   - respect the user's "Show floating pill while speaking" toggle
-//     stored under `dev.myna.app.showFloatingPill` (default true)
+//   - show/hide the window based on AudioPlayer.state AND the user's
+//     "Show floating pill" + "Always visible" toggles
+//   - position the pill on the **screen-under-cursor** on first show
+//     (multi-display fix — see notes below), unless the user has
+//     dragged it to a custom position (which AppKit persists via the
+//     FloatingPillWindow's frame autosave)
+//   - listen for screen-parameter changes, frontmost-app activations,
+//     pill drag, and pill expand/collapse to keep the geometry sane
+//   - expose `resetPosition()` so the menu-bar popover can clear the
+//     persisted frame and re-snap the pill to bottom-centre of the
+//     active screen
+//
+// Multi-display fix (v0.2.x item 5):
+//   Previously this used AXUIElementCopyAttributeValue on the
+//   frontmost app's main window to pick a screen. That path fails
+//   silently when Accessibility permission isn't granted, AND the
+//   AX-returned coordinates are flipped relative to NSScreen's
+//   bottom-left origin which made multi-display intersection math
+//   error-prone. We now use NSEvent.mouseLocation (the cursor) as
+//   the source of truth — it's what every modern multi-display
+//   utility uses (Magnet, Rectangle, AltTab) and it tracks the
+//   display the user is *actually* looking at, which is the right
+//   UX for a now-playing pill.
+//
+// Always-visible interaction (v0.2.x item 1):
+//   When pillAlwaysVisible is ON, the pill is shown whenever Myna is
+//   running. When the user has dragged the pill to a custom spot,
+//   that position takes precedence — we do NOT keep snapping back
+//   to bottom-centre every time playback starts.
 //
 // Owned by MynaApp as a @StateObject — its lifetime mirrors the app.
 import AppKit
@@ -22,6 +43,16 @@ public final class PillController: ObservableObject {
     /// Persistent UserDefaults key for the master enable toggle.
     public static let enabledDefaultsKey = "dev.myna.app.showFloatingPill"
 
+    /// Notification name external UI (the menu-bar popover's
+    /// "Reset pill position" action) posts to ask the controller to
+    /// clear the persisted pill frame. Decoupled this way so
+    /// MenuBarView doesn't need to import or hold a reference to
+    /// the PillController instance (which would require plumbing
+    /// through MynaApp.swift — outside this lane's allow-list).
+    public static let resetPositionNotification = Notification.Name(
+        "dev.myna.app.PillController.resetPosition"
+    )
+
     /// Margin from the bottom edge of the screen (above the Dock if
     /// it's pinned to bottom). 28pt mirrors typical macOS HUD spacing.
     private static let bottomMargin: CGFloat = 28
@@ -33,7 +64,13 @@ public final class PillController: ObservableObject {
     private var window: FloatingPillWindow?
     private var viewModel: PillViewModel?
     private var hostingView: NSHostingView<PillView>?
+    /// Long-lived subscriptions (player state, settings, defaults).
+    /// Tied to start()/stop().
     private var cancellables = Set<AnyCancellable>()
+    /// Subscriptions tied to the lifetime of the current window
+    /// (vm.$isExpanded). Cleared when the window is recreated by
+    /// resetPosition().
+    private var windowCancellables = Set<AnyCancellable>()
     private var notificationObservers: [NSObjectProtocol] = []
     private var didStart: Bool = false
 
@@ -87,7 +124,7 @@ public final class PillController: ObservableObject {
     }
 
     private func beginObserving() {
-        guard cancellables.isEmpty, let player else { return }
+        guard cancellables.isEmpty, let player, let settings else { return }
 
         // Player state drives visibility.
         player.$state
@@ -97,7 +134,31 @@ public final class PillController: ObservableObject {
             }
             .store(in: &cancellables)
 
-        // Screen / front-app changes re-position the pill.
+        // Settings drive visibility too — toggling pillAlwaysVisible
+        // (or the master showFloatingPill via the @AppStorage path in
+        // AdvancedTab) should take effect immediately.
+        settings.$pillAlwaysVisible
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.syncVisibility()
+            }
+            .store(in: &cancellables)
+
+        // Pre-audio loading drives visibility too — this is the only
+        // way the pill can appear inside ~50ms of a hotkey instead of
+        // the 200-300ms gap before AudioPlayer.state flips to .playing.
+        // The PillView renders a distinct "Processing…" + spinner
+        // affordance for this window. See PillViewModel.isLoading and
+        // AudioPlayer.isLoading for the contract.
+        player.$isLoading
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.syncVisibility()
+            }
+            .store(in: &cancellables)
+
+        // Screen / front-app changes re-position the pill (only when
+        // the user has not dragged it to a custom spot).
         let center = NotificationCenter.default
         notificationObservers.append(
             center.addObserver(
@@ -105,7 +166,7 @@ public final class PillController: ObservableObject {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                Task { @MainActor [weak self] in self?.repositionWindow() }
+                Task { @MainActor [weak self] in self?.handleScreenChange() }
             }
         )
         let ws = NSWorkspace.shared.notificationCenter
@@ -118,6 +179,42 @@ public final class PillController: ObservableObject {
                 Task { @MainActor [weak self] in self?.repositionWindow() }
             }
         )
+        // Listen for user-drag completion. Once the user has moved
+        // the pill we stop snapping it back on app activations — the
+        // pill stays where they put it, including across displays.
+        notificationObservers.append(
+            center.addObserver(
+                forName: FloatingPillWindow.didMoveByUserNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.handleUserDrag() }
+            }
+        )
+        // UserDefaults watcher for the @AppStorage-backed master
+        // toggle (`showFloatingPill`). Combine doesn't see UserDefaults
+        // writes from outside the SettingsViewModel; KVO does. Cheap
+        // because there are only a handful of writes per app session.
+        notificationObservers.append(
+            center.addObserver(
+                forName: UserDefaults.didChangeNotification,
+                object: UserDefaults.standard,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.syncVisibility() }
+            }
+        )
+        // Listen for "Reset pill position" requests from the menu-bar
+        // popover (or anywhere else).
+        notificationObservers.append(
+            center.addObserver(
+                forName: Self.resetPositionNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.resetPosition() }
+            }
+        )
 
         // Apply the current state immediately.
         syncVisibility()
@@ -127,6 +224,7 @@ public final class PillController: ObservableObject {
     /// AppDelegate.applicationWillTerminate.
     public func stop() {
         cancellables.removeAll()
+        windowCancellables.removeAll()
         for token in notificationObservers {
             NotificationCenter.default.removeObserver(token)
             NSWorkspace.shared.notificationCenter.removeObserver(token)
@@ -153,19 +251,34 @@ public final class PillController: ObservableObject {
 
     private func syncVisibility() {
         guard let player else { return }
+        let isPlayingOrPaused = (player.state == .playing || player.state == .paused)
+        let alwaysVisible = settings?.pillAlwaysVisible ?? false
+        // Pill is visible when:
+        //   • always-visible mode is ON (Lane 2 / v0.2.x feature), or
+        //   • audio is playing/paused, or
+        //   • the dispatcher is in the pre-audio loading window (Lane 1
+        //     ~50ms responsiveness — AudioPlayer.isLoading clears in
+        //     stop() and at first-chunk arrival).
         let shouldBeVisible = isEnabledInDefaults
-            && (player.state == .playing || player.state == .paused)
+            && (alwaysVisible || isPlayingOrPaused || player.isLoading)
         if shouldBeVisible {
             showWindow()
         } else {
             hideWindow()
         }
+        // Push the always-visible flag into the view model so the
+        // pill UI can render an idle state (bird + "Myna", no
+        // waveform) when nothing is playing but the pill is still up.
+        viewModel?.setAlwaysVisible(alwaysVisible)
     }
 
     private func ensureWindow() {
         if window != nil { return }
         guard let player, let settings else { return }
         let vm = PillViewModel(player: player, settings: settings, bridge: bridge)
+        // Initialise the always-visible flag before SwiftUI first renders
+        // so the idle layout doesn't flash on first show.
+        vm.setAlwaysVisible(settings.pillAlwaysVisible)
         let view = PillView(viewModel: vm)
         let hosting = NSHostingView(rootView: view)
         hosting.autoresizingMask = [.width, .height]
@@ -178,12 +291,16 @@ public final class PillController: ObservableObject {
         self.viewModel = vm
 
         // Track expand/collapse to resize the window frame to fit.
+        // When the user has positioned the pill we keep the origin
+        // fixed and only resize the size component. Stored in
+        // windowCancellables so resetPosition() (which recreates the
+        // window) drops the subscription cleanly.
         vm.$isExpanded
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 Task { @MainActor [weak self] in self?.repositionWindow() }
             }
-            .store(in: &cancellables)
+            .store(in: &windowCancellables)
     }
 
     private func showWindow() {
@@ -203,83 +320,164 @@ public final class PillController: ObservableObject {
     }
 
     // MARK: - positioning
+    //
+    // Two regimes:
+    //   (1) User has NOT dragged the pill — we own positioning and
+    //       snap to bottom-centre of the screen-under-cursor on every
+    //       show / screen change / app activation.
+    //   (2) User HAS dragged the pill — AppKit's frame autosave owns
+    //       the origin. We only touch the size component when the
+    //       pill expands/collapses, and we validate the origin is
+    //       still on-screen (display unplug fallback).
 
-    /// Compute the target screen: the screen that currently contains
-    /// the frontmost application's main window. Falls back to
-    /// `NSScreen.main` (cursor screen) and finally the first screen.
+    /// Returns the screen that contains the given cursor point. Falls
+    /// back to `screens.first(where: NSScreen.main)` then to the head
+    /// of the screens array.
+    ///
+    /// Exposed `internal` for testing — the test target uses
+    /// `@testable import` and can call this with injected arrays
+    /// without needing real displays.
+    static func screenForCursor(
+        _ cursor: CGPoint,
+        screens: [NSScreen],
+        main: NSScreen? = NSScreen.main
+    ) -> NSScreen? {
+        if let hit = screens.first(where: { $0.frame.contains(cursor) }) {
+            return hit
+        }
+        if let main, screens.contains(where: { $0 === main }) {
+            return main
+        }
+        return screens.first
+    }
+
+    /// The screen the pill should appear on right now. Cursor-based,
+    /// which mirrors every modern multi-display utility and is what
+    /// the user expects (their cursor lives on the display they're
+    /// looking at).
     private func targetScreen() -> NSScreen? {
-        if let frontApp = NSWorkspace.shared.frontmostApplication,
-           let appWindowBounds = frontmostWindowBounds(for: frontApp) {
-            // Pick whichever screen contains the largest portion of
-            // the front app's main window.
-            let screens = NSScreen.screens
-            let best = screens.max { lhs, rhs in
-                intersectionArea(lhs.frame, appWindowBounds)
-                    < intersectionArea(rhs.frame, appWindowBounds)
-            }
-            if let best { return best }
-        }
-        return NSScreen.main ?? NSScreen.screens.first
-    }
-
-    private func intersectionArea(_ a: CGRect, _ b: CGRect) -> CGFloat {
-        let r = a.intersection(b)
-        guard !r.isNull else { return 0 }
-        return r.width * r.height
-    }
-
-    /// Best-effort: read the front app's main window bounds via the
-    /// Accessibility API. May be nil if the app doesn't expose it or
-    /// we lack Accessibility permission; the caller falls back.
-    private func frontmostWindowBounds(for app: NSRunningApplication) -> CGRect? {
-        let pid = app.processIdentifier
-        let axApp = AXUIElementCreateApplication(pid)
-        var windowsRef: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsRef)
-        guard result == .success, let windows = windowsRef as? [AXUIElement], let first = windows.first else {
-            return nil
-        }
-        var posRef: CFTypeRef?
-        var sizeRef: CFTypeRef?
-        AXUIElementCopyAttributeValue(first, kAXPositionAttribute as CFString, &posRef)
-        AXUIElementCopyAttributeValue(first, kAXSizeAttribute as CFString, &sizeRef)
-        guard let posVal = posRef, let sizeVal = sizeRef else { return nil }
-        var position = CGPoint.zero
-        var size = CGSize.zero
-        // AXValueGetValue returns false on type mismatch; both calls
-        // are required.
-        // swiftlint:disable force_cast
-        let posOK = AXValueGetValue(posVal as! AXValue, .cgPoint, &position)
-        let sizeOK = AXValueGetValue(sizeVal as! AXValue, .cgSize, &size)
-        // swiftlint:enable force_cast
-        guard posOK, sizeOK else { return nil }
-        // AX coordinates are top-left origin in *flipped* (screen)
-        // space — i.e. y=0 is at the top of the primary screen. We
-        // convert to AppKit's bottom-left coordinate space below.
-        return CGRect(origin: position, size: size)
+        Self.screenForCursor(
+            NSEvent.mouseLocation,
+            screens: NSScreen.screens
+        )
     }
 
     private func repositionWindow() {
         guard let window, let screen = targetScreen() else { return }
-        // Size the panel to fit its content view.
-        window.layoutIfNeeded()
-        if let host = hostingView {
-            let fitting = host.fittingSize
-            // Clamp to sane minimums to avoid 0-size frames during
-            // SwiftUI transitions.
-            let width = max(80, fitting.width)
-            let height = max(Pill_minHeight, fitting.height)
-            var frame = window.frame
-            frame.size = CGSize(width: width, height: height)
-            window.setFrame(frame, display: false, animate: false)
+        if window.isDragging {
+            // Don't fight a live drag — AppKit owns the frame for the
+            // duration. The drag-end notification will re-trigger us
+            // if anything else needs to settle.
+            return
         }
 
-        let visible = screen.visibleFrame  // accounts for Dock/menu bar
-        let frame = window.frame
-        let x = visible.midX - frame.width / 2
-        let y = visible.minY + Self.bottomMargin
-        let target = NSRect(x: x, y: y, width: frame.width, height: frame.height)
+        // Size the panel to fit its content view.
+        window.layoutIfNeeded()
+        let fitting = hostingView?.fittingSize ?? window.frame.size
+        let width = max(80, fitting.width)
+        let height = max(Pill_minHeight, fitting.height)
+
+        if window.hasUserPosition {
+            // Resize in place around the current origin, but clamp
+            // the frame to stay on a visible screen (display unplug
+            // safety). If the saved origin lands off-screen, snap to
+            // bottom-centre of the screen-under-cursor.
+            var frame = window.frame
+            frame.size = CGSize(width: width, height: height)
+            if !isFrameOnAnyScreen(frame) {
+                frame = bottomCenterFrame(on: screen, width: width, height: height)
+            }
+            window.setFrame(frame, display: true, animate: false)
+            return
+        }
+
+        // Default position: bottom-centre of the screen-under-cursor.
+        let target = bottomCenterFrame(on: screen, width: width, height: height)
         window.setFrame(target, display: true, animate: false)
+    }
+
+    private func bottomCenterFrame(
+        on screen: NSScreen,
+        width: CGFloat,
+        height: CGFloat
+    ) -> NSRect {
+        let visible = screen.visibleFrame  // accounts for Dock/menu bar
+        let x = visible.midX - width / 2
+        let y = visible.minY + Self.bottomMargin
+        return NSRect(x: x, y: y, width: width, height: height)
+    }
+
+    private func isFrameOnAnyScreen(_ frame: NSRect) -> Bool {
+        // Require at least 80% of the pill's width to be on some
+        // screen — a sliver hanging off the edge still counts as
+        // "visible enough". Avoids panicking on small display
+        // arrangement changes (e.g. a 1px row of pixels off-screen).
+        let minOverlap: CGFloat = 0.8
+        for screen in NSScreen.screens {
+            let intersection = screen.frame.intersection(frame)
+            guard !intersection.isNull else { continue }
+            if intersection.width >= frame.width * minOverlap {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func handleScreenChange() {
+        // Display arrangement changed (plug/unplug). If the user had
+        // a custom position that's now off-screen we'll re-snap to a
+        // visible screen via the off-screen check in repositionWindow.
+        repositionWindow()
+    }
+
+    private func handleUserDrag() {
+        // Nothing to do beyond the side-effects AppKit already
+        // applied (autosaved frame + hasUserPosition=true). Send an
+        // objectWillChange so any UI bound to the controller (e.g.
+        // a future "pill is at custom position" indicator) refreshes.
+        objectWillChange.send()
+    }
+
+    // MARK: - public API
+
+    /// Forget the persisted pill position and snap back to
+    /// bottom-centre of the screen-under-cursor. Wired to the
+    /// "Reset pill position" action in the menu-bar popover.
+    public func resetPosition() {
+        // Clear AppKit's autosaved frame from UserDefaults so the
+        // next launch also starts fresh.
+        UserDefaults.standard.removeObject(forKey: FloatingPillFrame.defaultsKey)
+        // Also clear under the raw autosave name in case AppKit
+        // version changes its prefix scheme (defensive — currently
+        // a no-op).
+        UserDefaults.standard.removeObject(forKey: FloatingPillFrame.autosaveName)
+        if let window {
+            // Calling setFrameAutosaveName("") then re-setting it is
+            // the documented way to drop AppKit's in-memory cache of
+            // the autosave name; without it AppKit will rewrite the
+            // key on the next move.
+            window.setFrameAutosaveName("")
+            // Reset our flag so the next reposition snaps to default.
+            // We have to clear `hasUserPosition` by recreating the
+            // window — there's no public setter. Cheap: tear down
+            // and let showWindow() rebuild lazily.
+            let wasVisible = window.alphaValue > 0
+            window.orderOut(nil)
+            self.window = nil
+            self.hostingView = nil
+            self.viewModel = nil
+            // Drop per-window subscriptions so ensureWindow() can
+            // re-install them against the fresh viewModel without
+            // accumulating dead sinks.
+            windowCancellables.removeAll()
+            if wasVisible {
+                showWindow()
+            } else {
+                // Build window in idle state so the next show uses
+                // the default frame and re-installs the autosave.
+                ensureWindow()
+            }
+        }
     }
 }
 

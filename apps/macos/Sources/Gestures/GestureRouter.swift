@@ -1,42 +1,51 @@
 // GestureRouter.swift — translates a recognised gesture into an
-// AppDispatcher action. Decoupled from GestureMonitor so the monitor
-// can stay pure NSEvent plumbing and the router can be unit-tested
-// against a fake dispatcher.
+// AppDispatcher action. Decoupled from the gesture detection layer
+// (MultitouchBridge + GestureRecognizer4Finger) so this stays a thin,
+// fully unit-testable mapping.
+//
+// v0.2.x REDESIGN
+// ---------------
+// The original v0.2 gesture set was 4-finger swipe + force-touch
+// click. Swipe collides with macOS Mission Control ("Swipe between
+// full-screen apps" — defaults to 4 fingers on Magic Trackpad) and
+// never fires reliably, so we scrapped it. The new set is:
+//
+//   • 4-finger tap         → speak selection (full)
+//   • 4-finger double-tap  → speak selection (summary)
+//   • 4-finger click       → play / pause toggle
+//   • 4-finger double-click → stop
+//
+// "Click" here means a Force Touch hard click (stage ≥ 2) while four
+// fingers are in contact. See GestureRecognizer4Finger for the state
+// machine.
 import Foundation
 
-/// The semantic gesture vocabulary Myna recognises. Keep this stable —
-/// onboarding docs and the System Settings note both reference these names.
+/// The semantic gesture vocabulary Myna recognises.
 public enum MynaGesture: String, Sendable, CaseIterable {
-    /// 4-finger trackpad tap → trigger speak-selection (same effect as the hotkey).
-    /// NOTE: not implementable with public global NSEvent APIs today; we
-    /// surface this as a known limitation and recommend a Hammerspoon
-    /// recipe in the Settings tab.
+    /// 4-finger trackpad tap → speak selection (full).
     case fourFingerTap
 
-    /// 4-finger trackpad swipe left → previous chunk.
-    /// Implemented via global NSEvent `.swipe`. Conflicts with the macOS
-    /// "Swipe between full-screen apps" default; users must either
-    /// re-bind that to 3 fingers or disable Mission Control's 4-finger
-    /// gestures in System Settings → Trackpad → More Gestures.
-    case fourFingerSwipeLeft
+    /// 4-finger trackpad double-tap → speak selection (summary).
+    case fourFingerDoubleTap
 
-    /// 4-finger trackpad swipe right → next chunk. Same caveat as above.
-    case fourFingerSwipeRight
+    /// 4-finger trackpad hard click → play / pause toggle.
+    case fourFingerClick
 
-    /// 3-finger force-touch click → toggle pause/resume.
-    /// Implemented via NSEvent `.pressure` with `stage >= 2` (the
-    /// system's hard click threshold). Requires Force Touch trackpad
-    /// hardware. We accept whatever finger count was on the trackpad
-    /// at the moment of click — the OS doesn't expose touch count on
-    /// global pressure events, so the "3-finger" part is best-effort.
-    case threeFingerForceClick
+    /// 4-finger trackpad hard double-click → stop.
+    case fourFingerDoubleClick
 }
 
-/// Pluggable target so the router can be unit-tested.
+/// Pluggable target so the router can be unit-tested. Implemented by
+/// `AppDispatcher` in production.
 @MainActor
 public protocol GestureActionTarget: AnyObject {
     func speakSelection(mode: SynthesizeMode)
     func togglePause()
+    func stop()
+    /// Retained from v0.1 for backwards-compat with any internal call
+    /// sites; the new gesture set does not use seek but the protocol
+    /// keeps it so we don't churn `AppDispatcher`. Removing this would
+    /// force a separate `URLSchemeDispatching`-style split.
     func seek(delta: TimeInterval)
 }
 
@@ -48,12 +57,6 @@ public final class GestureRouter {
     private weak var target: (any GestureActionTarget)?
     private let log = Log(.app)
 
-    /// Seek amount we use to approximate "previous chunk / next chunk".
-    /// The Swift player has no notion of chunks, so the cleanest
-    /// public-API substitute is a longish jump on the virtual timeline.
-    /// 30 s matches the seek menu's largest step.
-    public static let chunkSeekSeconds: TimeInterval = 30
-
     public init(target: any GestureActionTarget) {
         self.target = target
     }
@@ -63,12 +66,12 @@ public final class GestureRouter {
         switch gesture {
         case .fourFingerTap:
             target.speakSelection(mode: .full)
-        case .fourFingerSwipeLeft:
-            target.seek(delta: -Self.chunkSeekSeconds)
-        case .fourFingerSwipeRight:
-            target.seek(delta: Self.chunkSeekSeconds)
-        case .threeFingerForceClick:
+        case .fourFingerDoubleTap:
+            target.speakSelection(mode: .summary)
+        case .fourFingerClick:
             target.togglePause()
+        case .fourFingerDoubleClick:
+            target.stop()
         }
         log.info("gesture handled: \(gesture.rawValue)")
     }

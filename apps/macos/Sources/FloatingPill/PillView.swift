@@ -96,6 +96,20 @@ public struct PillView: View {
 
     // MARK: - collapsed
 
+    /// Status label shown next to the bird in the collapsed pill.
+    /// "Processing" during the pre-audio loading window (Lane 1 ~50ms
+    /// responsiveness), "Paused" when paused, "Speaking" while active,
+    /// "Myna" when idle (always-visible mode shows the brand chip).
+    /// Loading wins over speaking because it owns the leading edge of
+    /// the session — once a chunk arrives we flip to "Speaking" in the
+    /// same frame.
+    private var collapsedStatusText: String {
+        if viewModel.isLoading && !viewModel.isSpeaking { return "Processing" }
+        if viewModel.isPaused { return "Paused" }
+        if viewModel.isSpeaking { return "Speaking" }
+        return "Myna"
+    }
+
     private var collapsed: some View {
         HStack(spacing: 8) {
             Image(systemName: "bird")
@@ -103,14 +117,36 @@ public struct PillView: View {
                 .foregroundStyle(Pill.foreground)
                 .matchedGeometryEffect(id: "bird", in: pillNamespace)
 
-            Text(viewModel.isPaused ? "Paused" : "Speaking")
+            Text(collapsedStatusText)
                 .font(Pill.statusFont)
                 .foregroundStyle(Pill.foreground)
                 .matchedGeometryEffect(id: "status", in: pillNamespace)
 
-            WaveformDots(isPlaying: viewModel.isSpeaking && !viewModel.isPaused)
-                .frame(width: dotsWidth, height: 12)
-                .matchedGeometryEffect(id: "waveform", in: pillNamespace)
+            // Three-way affordance:
+            //   • Loading (pre-audio window) → indeterminate spinner so
+            //     the user sees the trigger took effect before audio
+            //     arrives. Lane 1 / v0.2.x feature.
+            //   • Speaking → animated WaveformDots.
+            //   • Idle (only reachable in always-visible mode) → empty
+            //     placeholder. A pulsing chip while nothing is playing
+            //     reads as "loading" and is wrong UX. matchedGeometry
+            //     still needs the anchor so we hold a 0-width Color.
+            if viewModel.isLoading && !viewModel.isSpeaking {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .controlSize(.mini)
+                    .tint(Pill.foreground)
+                    .frame(width: dotsWidth, height: 12)
+                    .matchedGeometryEffect(id: "waveform", in: pillNamespace)
+            } else if viewModel.isSpeaking {
+                WaveformDots(isPlaying: !viewModel.isPaused)
+                    .frame(width: dotsWidth, height: 12)
+                    .matchedGeometryEffect(id: "waveform", in: pillNamespace)
+            } else {
+                Color.clear
+                    .frame(width: 0, height: 12)
+                    .matchedGeometryEffect(id: "waveform", in: pillNamespace)
+            }
         }
         .padding(.horizontal, Pill.collapsedHorizontalPadding)
         .frame(height: Pill.collapsedHeight)
@@ -128,6 +164,21 @@ public struct PillView: View {
 
     // MARK: - expanded
 
+    /// Headline shown in the expanded pill. Falls back through:
+    /// loading (with preview text if available) → bridge preview text →
+    /// "Paused" → "Speaking…" → "Myna" (idle). Loading prefers the
+    /// dispatcher's preview text so the user can confirm the right
+    /// thing is queued before audio starts.
+    private var expandedHeadline: String {
+        if viewModel.isLoading && !viewModel.isSpeaking {
+            return viewModel.previewText ?? "Processing\u{2026}"
+        }
+        if let text = viewModel.previewText { return text }
+        if viewModel.isPaused { return "Paused" }
+        if viewModel.isSpeaking { return "Speaking\u{2026}" }
+        return "Myna"
+    }
+
     private var expanded: some View {
         HStack(spacing: 10) {
             Image(systemName: "bird")
@@ -136,7 +187,7 @@ public struct PillView: View {
                 .matchedGeometryEffect(id: "bird", in: pillNamespace)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(viewModel.previewText ?? (viewModel.isPaused ? "Paused" : "Speaking…"))
+                Text(expandedHeadline)
                     .font(Pill.previewFont)
                     .foregroundStyle(Pill.foreground)
                     .lineLimit(1)
@@ -144,9 +195,24 @@ public struct PillView: View {
                     .matchedGeometryEffect(id: "status", in: pillNamespace)
                 HStack(spacing: 6) {
                     voiceChip
-                    if viewModel.previewText != nil {
-                        WaveformDots(isPlaying: viewModel.isSpeaking && !viewModel.isPaused)
+                    // Same three-way affordance as the collapsed view:
+                    //   loading → mini spinner
+                    //   speaking with preview text → waveform
+                    //   else → zero-width placeholder
+                    if viewModel.isLoading && !viewModel.isSpeaking {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .controlSize(.mini)
+                            .tint(Pill.foreground)
                             .frame(width: dotsWidth, height: 10)
+                            .matchedGeometryEffect(id: "waveform", in: pillNamespace)
+                    } else if viewModel.isSpeaking && viewModel.previewText != nil {
+                        WaveformDots(isPlaying: !viewModel.isPaused)
+                            .frame(width: dotsWidth, height: 10)
+                            .matchedGeometryEffect(id: "waveform", in: pillNamespace)
+                    } else {
+                        Color.clear
+                            .frame(width: 0, height: 10)
                             .matchedGeometryEffect(id: "waveform", in: pillNamespace)
                     }
                 }
@@ -154,7 +220,12 @@ public struct PillView: View {
 
             Spacer(minLength: 4)
 
-            transportControls
+            // Transport controls only when there's something to
+            // control. In always-visible idle mode the right side of
+            // the pill is just the close button.
+            if viewModel.isSpeaking {
+                transportControls
+            }
             closeButton
         }
         .padding(.horizontal, 14)
@@ -204,16 +275,27 @@ public struct PillView: View {
     }
 
     private var closeButton: some View {
-        Button {
+        // In always-visible idle mode the pill can't actually be
+        // "closed" (it stays on screen by user preference) — the
+        // button collapses the expanded view instead. Use the
+        // chevron-down glyph to make that obvious. In any active
+        // session the xmark continues to mean "hide pill UI".
+        let glyph = (viewModel.isAlwaysVisible && !viewModel.isSpeaking)
+            ? "chevron.down"
+            : "xmark"
+        let helpText = (viewModel.isAlwaysVisible && !viewModel.isSpeaking)
+            ? "Collapse"
+            : "Hide pill"
+        return Button {
             viewModel.dismiss()
         } label: {
-            Image(systemName: "xmark")
+            Image(systemName: glyph)
                 .font(.system(size: 10, weight: .bold))
                 .frame(width: 20, height: 20)
                 .contentShape(Rectangle())
         }
         .buttonStyle(PillIconButtonStyle())
-        .help("Hide pill")
+        .help(helpText)
         // Swallow the parent tap-to-pin gesture so dismissing doesn't
         // also toggle the pin.
         .simultaneousGesture(TapGesture().onEnded {})
@@ -353,7 +435,13 @@ private final class WaveformDotsView: NSView {
 #if DEBUG
 struct PillView_PreviewModel {
     @MainActor
-    static func make(isSpeaking: Bool, isExpanded: Bool, withText: Bool = false, paused: Bool = false) -> PillViewModel {
+    static func make(
+        isSpeaking: Bool,
+        isExpanded: Bool,
+        withText: Bool = false,
+        paused: Bool = false,
+        alwaysVisible: Bool = false
+    ) -> PillViewModel {
         // Build a real AudioPlayer + Settings — they're cheap to construct.
         let player = AudioPlayer()
         // Use an in-memory defaults suite so the preview never writes
@@ -371,7 +459,12 @@ struct PillView_PreviewModel {
         }
         let vm = PillViewModel(player: player, settings: settings, bridge: bridge)
         // Force state for the preview without driving the audio engine.
-        vm._previewForceState(isSpeaking: isSpeaking, isExpanded: isExpanded, paused: paused)
+        vm._previewForceState(
+            isSpeaking: isSpeaking,
+            isExpanded: isExpanded,
+            paused: paused,
+            alwaysVisible: alwaysVisible
+        )
         return vm
     }
 }
@@ -396,6 +489,26 @@ struct PillView_PreviewModel {
 
 #Preview("Expanded — no text") {
     PillView(viewModel: PillView_PreviewModel.make(isSpeaking: true, isExpanded: true, withText: false))
+        .padding(40)
+        .background(Color.gray.opacity(0.2))
+}
+
+#Preview("Collapsed — idle (always visible)") {
+    PillView(viewModel: PillView_PreviewModel.make(
+        isSpeaking: false,
+        isExpanded: false,
+        alwaysVisible: true
+    ))
+        .padding(40)
+        .background(Color.gray.opacity(0.2))
+}
+
+#Preview("Expanded — idle (always visible)") {
+    PillView(viewModel: PillView_PreviewModel.make(
+        isSpeaking: false,
+        isExpanded: true,
+        alwaysVisible: true
+    ))
         .padding(40)
         .background(Color.gray.opacity(0.2))
 }
