@@ -113,6 +113,11 @@ public final class AppDispatcher: URLSchemeDispatching, GestureActionTarget {
         // host or the first ~60 chars of the text if no URL.
         let recentTitle = computeRecentTitle(text: text, url: url)
         menuController?.recordNowReading(title: recentTitle, voice: settings.voice)
+        // Surface the same preview into the FloatingPill bridge so the
+        // expanded pill shows what's playing. Pill falls back to
+        // "Speaking…" when this is nil. See PillBridge.swift for why
+        // this is a separate sink from AudioPlayer.
+        PillBridge.shared.publish(currentText: recentTitle, voice: settings.voice)
         do {
             let stream = client.synthesize(req) { metadata in
                 // Hop to main actor — onMetadata fires on whichever
