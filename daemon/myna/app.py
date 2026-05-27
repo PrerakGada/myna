@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from . import __version__, chunking, engine
 from . import extract as extract_mod
+from . import lang_detect
 from . import summarize as summarize_mod
 from .config import load_config
 from .player import Player
@@ -37,6 +38,7 @@ from .v2_types import (
     V2ExtractReq,
     V2ExtractResp,
     V2Health,
+    V2ModelStatus,
     V2RegistryActionResp,
     V2RegistryAnnounceReq,
     V2RegistryAnnounceResp,
@@ -50,8 +52,11 @@ from .v2_types import (
     V2SynthesizeReq,
     V2V1PlayerInfo,
     V2Voice,
+    V2VoiceWardrobe,
+    V2VoiceWardrobeEntry,
     V2Voices,
 )
+from .voice_wardrobe import VoiceWardrobe, resolve_voice
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +191,11 @@ def create_app(config: dict | None = None) -> FastAPI:
     app.state.engine_up = engine.engine_up
     app.state.summarize = summarize_mod.summarize
     app.state.extract = extract_mod.extract_article
+    # Voice wardrobe: optional per-bundle-id voice overrides. Lives in
+    # ~/.config/myna/voice_wardrobe.json. Tests can swap this out via
+    # app.state.wardrobe = VoiceWardrobe(path=tmp_path).
+    app.state.wardrobe = VoiceWardrobe()
+    app.state.detect_language = lang_detect.detect_language
 
     # v2 bookkeeping
     app.state.started_at = time.time()
@@ -430,7 +440,19 @@ def create_app(config: dict | None = None) -> FastAPI:
                 detail={"ok": False, "reason": "empty"},
             )
         total = len(chunks)
-        voice = req.voice or cfg["voice"]
+        # Voice resolution order: explicit `voice` in request → wardrobe
+        # mapping for `bundle_id` → config default. The wardrobe lookup
+        # is wrapped in a try/except because it should never break the
+        # synthesize path even if the wardrobe file is corrupt.
+        try:
+            voice = resolve_voice(
+                app.state.wardrobe,
+                req.bundle_id,
+                req.voice,
+                cfg["voice"],
+            )
+        except Exception:
+            voice = req.voice or cfg["voice"]
         # Clamp speed to the same [0.5, 2.0] range the v1 /speed endpoint
         # enforces. Without this, a malicious or buggy client could send
         # speed=99 and cause Kokoro to spend a long time producing audio
@@ -441,6 +463,22 @@ def create_app(config: dict | None = None) -> FastAPI:
         # Mark thinking the moment we accept the request. Clears any prior
         # error state and tags the snapshot with this request's id.
         app.state.machine.transition_to("thinking", request_id=session_id)
+
+        # Non-English detection — best-effort. We emit response headers
+        # rather than overriding the voice; the Swift app gets to decide
+        # whether to surface a "Detected: Spanish — switch voice?" chip.
+        # Failures (langid missing, weird text) silently produce no header.
+        detected = None
+        try:
+            detected = app.state.detect_language(text)
+        except Exception:
+            detected = None
+        configured_iso = lang_detect.map_voice_lang_to_iso(cfg.get("lang_code"))
+        lang_headers: dict[str, str] = {}
+        if detected:
+            lang_headers["X-Myna-Detected-Lang"] = detected
+            if configured_iso and detected != configured_iso:
+                lang_headers["X-Myna-Lang-Mismatch"] = "1"
 
         # Synthesize the first chunk eagerly so engine errors surface as a real
         # HTTP 502 (we haven't started streaming yet). Subsequent chunks are
@@ -588,6 +626,7 @@ def create_app(config: dict | None = None) -> FastAPI:
         return StreamingResponse(
             _generator(),
             media_type="multipart/mixed; boundary=mynachunk",
+            headers=lang_headers or None,
         )
 
     # ----- v2 endpoints -----
@@ -872,5 +911,61 @@ def create_app(config: dict | None = None) -> FastAPI:
                 detail={"ok": False, "reason": "not_found"},
             )
         return V2RegistryActionResp(ok=True)
+
+    # ----- v2 voice wardrobe (per-bundle voice overrides) -----
+
+    @app.get("/v2/voice_wardrobe", response_model=V2VoiceWardrobe)
+    def v2_voice_wardrobe_get() -> V2VoiceWardrobe:
+        return V2VoiceWardrobe(mappings=app.state.wardrobe.all())
+
+    @app.post("/v2/voice_wardrobe", response_model=V2VoiceWardrobe)
+    def v2_voice_wardrobe_set(entry: V2VoiceWardrobeEntry) -> V2VoiceWardrobe:
+        bundle = entry.bundle_id.strip()
+        if not bundle:
+            raise HTTPException(
+                status_code=400,
+                detail={"ok": False, "reason": "missing_bundle_id"},
+            )
+        # voice_id == None removes the mapping; any string upserts.
+        app.state.wardrobe.set(bundle, entry.voice_id)
+        return V2VoiceWardrobe(mappings=app.state.wardrobe.all())
+
+    # ----- v2 model status -----
+    #
+    # NOTE on Pause/Resume: the Myna daemon is a thin orchestrator over an
+    # out-of-process Kokoro engine (see engine.py — every synthesize() is
+    # a POST to engine_url). The model itself lives in another process the
+    # daemon doesn't manage, so suspending/resuming the *daemon* would not
+    # free RAM in any meaningful way. We expose status here for client UX
+    # (it can show "engine reachable / not reachable") but explicitly mark
+    # suspend_supported=False so the Swift app hides the toggle.
+
+    def _daemon_rss_mb() -> float:
+        """Resident-set size of this process in megabytes.
+
+        Uses resource.getrusage which is in the stdlib — no psutil
+        dependency. On macOS ru_maxrss is in bytes; on Linux it's
+        kilobytes. We normalize to MB.
+        """
+        try:
+            import resource
+            import sys
+
+            rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            if sys.platform == "darwin":
+                return rss / (1024 * 1024)
+            return rss / 1024
+        except Exception:
+            return 0.0
+
+    @app.get("/v2/model/status", response_model=V2ModelStatus)
+    def v2_model_status() -> V2ModelStatus:
+        return V2ModelStatus(
+            model_loaded=_check_engine_cached(),
+            engine_url=cfg["engine_url"],
+            daemon_rss_mb=round(_daemon_rss_mb(), 2),
+            daemon_pid=os.getpid(),
+            suspend_supported=False,
+        )
 
     return app

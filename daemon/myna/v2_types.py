@@ -17,6 +17,11 @@ class V2SynthesizeReq(BaseModel):
     mode: Literal["full", "summary"] = "full"
     chunk_chars: Optional[int] = None
     session_id: Optional[str] = None
+    # Voice wardrobe — if set, and the user hasn't passed an explicit
+    # `voice`, the daemon looks up the configured voice for this bundle
+    # id (e.g. "com.tinyspeck.slackmacgap") before falling back to the
+    # global default.
+    bundle_id: Optional[str] = None
 
 
 class V2ExtractReq(BaseModel):
@@ -151,3 +156,35 @@ class V2RegistryListResp(BaseModel):
 class V2RegistryActionResp(BaseModel):
     ok: bool
     reason: Optional[str] = None
+
+
+# ---- v2 voice wardrobe + model status ----
+
+class V2VoiceWardrobeEntry(BaseModel):
+    bundle_id: str
+    voice_id: Optional[str] = None
+
+
+class V2VoiceWardrobe(BaseModel):
+    mappings: dict[str, str]
+
+
+class V2ModelStatus(BaseModel):
+    """Snapshot of the daemon's TTS-engine-related resource usage.
+
+    Note: the daemon process itself does **not** hold the Kokoro model
+    in RAM — the model lives in a separate engine process at
+    ``engine_url``. ``model_loaded`` reflects whether that engine is
+    currently reachable; ``daemon_rss_mb`` is the daemon's own
+    resident-set size for completeness.
+    """
+
+    model_loaded: bool
+    engine_url: str
+    daemon_rss_mb: float
+    daemon_pid: int
+    # True iff the daemon can meaningfully suspend the TTS model on
+    # request. Because Myna talks to an out-of-process engine, this is
+    # always false today; the field exists so the Swift UI can hide the
+    # "Pause Myna" toggle if the daemon can't honour it.
+    suspend_supported: bool

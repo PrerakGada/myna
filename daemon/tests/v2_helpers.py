@@ -58,14 +58,19 @@ def make_client(config_overrides=None, registry_path=None, **state_overrides):
       extract    → "EXTRACTED"
       player     → FakePlayer (will record any v2-side misuse)
       v2_registry → fresh in-memory (path in a tempfile per call if provided)
+      wardrobe   → tmpdir-backed VoiceWardrobe (no user state collision)
+      detect_language → returns None (langid is optional in tests)
 
     `config_overrides` are merged into the loaded config before create_app.
     `registry_path` (Path|None): override the v2 registry persistence path
         — tests should pass a tmp_path to avoid touching ~/.cache/myna.
     `state_overrides` are setattr'd on app.state after create_app.
     """
+    import tempfile
+
     from myna.config import load_config
     from myna.v2_registry import V2Registry
+    from myna.voice_wardrobe import VoiceWardrobe
 
     cfg = load_config()
     # Disable karaoke for tests by default — make_client() callers that
@@ -83,6 +88,15 @@ def make_client(config_overrides=None, registry_path=None, **state_overrides):
     app.state.extract = lambda url: "EXTRACTED"
     if registry_path is not None:
         app.state.v2_registry = V2Registry(path=registry_path)
+    # Isolate wardrobe state so test runs don't pollute the user's
+    # ~/.config/myna/voice_wardrobe.json. Each test gets a fresh tmpdir.
+    tmpdir = tempfile.mkdtemp(prefix="myna-wardrobe-")
+    import pathlib
+
+    app.state.wardrobe = VoiceWardrobe(path=pathlib.Path(tmpdir) / "voice_wardrobe.json")
+    # Tests default to "language detection finds nothing" so v2 synthesize
+    # tests don't accidentally gain X-Myna-Detected-Lang headers.
+    app.state.detect_language = lambda text: None
     for k, v in state_overrides.items():
         setattr(app.state, k, v)
     # base_url="http://127.0.0.1" so requests carry Host: 127.0.0.1,

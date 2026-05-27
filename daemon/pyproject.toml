@@ -8,6 +8,14 @@ dependencies = [
     "uvicorn[standard]",
     "httpx",
     "trafilatura",
+    # langid is a small (~2 MB) deterministic language detector used by
+    # myna.lang_detect to annotate /v2/synthesize responses with
+    # X-Myna-Detected-Lang headers. Importable name is `langid`. The
+    # detection module gracefully no-ops if langid isn't importable, so
+    # the daemon still runs in environments that don't have it, but we
+    # ship it as a default dep so the feature works out of the box for
+    # users who brew-install the daemon.
+    "langid",
 ]
 
 [project.optional-dependencies]
