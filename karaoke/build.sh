@@ -73,8 +73,18 @@ if [ "$DRY_RUN" != "1" ]; then
 fi
 
 # 3. Wrap into .app skeleton.
+#
+# IMPORTANT — do NOT create an empty Contents/Resources/ directory.
+# codesign --strict's verifier walks the resource manifest in
+# _CodeSignature/CodeResources and rejects bundles whose declared
+# Resources/ exists on disk but contains no actual resources:
+#   "code has no resources but signature indicates they must be present"
+# The karaoke sidecar has no resource files — Info.plist lives in
+# Contents/, not Contents/Resources/. If we ever add assets, just drop
+# them in Contents/Resources/ at that point and codesign will pick them
+# up automatically.
 run "rm -rf '${APP}'"
-run "mkdir -p '${APP}/Contents/MacOS' '${APP}/Contents/Resources'"
+run "mkdir -p '${APP}/Contents/MacOS'"
 run "cp '${BIN_PATH}' '${APP}/Contents/MacOS/${APP_NAME}'"
 run "cp 'Resources/Info.plist' '${APP}/Contents/Info.plist'"
 run "chmod +x '${APP}/Contents/MacOS/${APP_NAME}'"
