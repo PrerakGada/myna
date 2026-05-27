@@ -12,9 +12,16 @@ import SwiftUI
 struct MynaApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
+    /// Floating now-playing pill (Lane A, v0.2.x). Declared at the App
+    /// scope as a @StateObject so its lifetime matches the app. It's
+    /// created in a dormant state — `attach(player:, settings:)` is
+    /// called from RootMenuBarView once AppDelegate.bootstrap()
+    /// completes (didBootstrap flips to true).
+    @StateObject private var pillController = PillController()
+
     var body: some Scene {
         MenuBarExtra {
-            RootMenuBarView(appDelegate: appDelegate)
+            RootMenuBarView(appDelegate: appDelegate, pillController: pillController)
         } label: {
             RootMenuBarLabel(appDelegate: appDelegate)
         }
@@ -58,6 +65,7 @@ private struct BootedLabel: View {
 
 private struct RootMenuBarView: View {
     @ObservedObject var appDelegate: AppDelegate
+    @ObservedObject var pillController: PillController
 
     var body: some View {
         // Gate on the @Published `didBootstrap` flag so SwiftUI re-renders
@@ -65,6 +73,7 @@ private struct RootMenuBarView: View {
         // alone wouldn't trigger an update because IUOs aren't @Published.
         if appDelegate.didBootstrap, let controller = appDelegate.menuController {
             MenuBarView(controller: controller)
+                .onAppear { attachPillIfNeeded() }
         } else {
             // .window-style fallback: a small dark card with the same
             // chrome as the real popover. macOS will host this in an
@@ -80,6 +89,24 @@ private struct RootMenuBarView: View {
             .frame(width: 240)
             .background(Color(red: 0.039, green: 0.039, blue: 0.047))
         }
+    }
+
+    /// Attach + start the floating-pill controller once AppDelegate
+    /// has bootstrapped its singletons. Idempotent: PillController
+    /// guards against re-entry. AppDelegate.player / .settings are
+    /// implicitly-unwrapped optionals — bootstrap completion implies
+    /// they're non-nil, but we double-check defensively because the
+    /// XCTest harness skips bootstrap entirely.
+    private func attachPillIfNeeded() {
+        guard appDelegate.didBootstrap else { return }
+        // Optional-cast through Any to read the IUO without crashing
+        // if it's still nil for any reason (defensive against test
+        // hosts that observed didBootstrap=true but raced ahead).
+        let player: AudioPlayer? = appDelegate.player
+        let settings: SettingsViewModel? = appDelegate.settings
+        guard let player, let settings else { return }
+        pillController.attach(player: player, settings: settings)
+        pillController.start()
     }
 }
 
