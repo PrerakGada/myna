@@ -35,6 +35,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private(set) var hotkeys: HotkeyManager!
     private(set) var updates: UpdateController!
     private(set) var menuController: MenuBarController!
+    private(set) var gestures: GestureMonitor!
+    private var gestureRouter: GestureRouter!
+    private var gestureSettingsObserver: AnyCancellable?
     /// @Published so the MenuBarExtra view re-renders when bootstrap
     /// completes. Plain stored IUOs don't fire objectWillChange, so the
     /// menu was permanently stuck on the "Myna initialising…" fallback.
@@ -113,16 +116,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // Late-attach the menu controller into the dispatcher so the
         // recents/now-reading state populates when speakSelection runs.
         self.dispatcher.attach(menuController: self.menuController)
+        // v0.2: trackpad gestures, opt-in. The router is held strong
+        // by the monitor (which holds it strong); we keep our own
+        // reference so the AppDelegate test surface can introspect it.
+        self.gestureRouter = GestureRouter(target: dispatcher)
+        self.gestures = GestureMonitor(router: gestureRouter)
+        // Observe the settings toggle so the monitor starts/stops in
+        // real time when the user flips the switch in Settings.
+        gestureSettingsObserver = settings.$trackpadGesturesEnabled
+            .sink { [weak self] enabled in
+                Task { @MainActor [weak self] in
+                    self?.applyGestureToggle(enabled)
+                }
+            }
+        applyGestureToggle(settings.trackpadGesturesEnabled)
         self.didBootstrap = true
-        // First bootstrap → mark first_run_complete so the next minor
-        // bump triggers the What's New dialog (S10 AC #7).
-        WhatsNewLauncher.shared.markFirstRunComplete()
-        // Show the What's New dialog if it's due (minor bump since
-        // last_seen_version). Runs ~immediately after bootstrap returns
-        // so the menu bar has time to come up first.
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            _ = WhatsNewLauncher.shared.showIfDue()
+        // First-run gate (S11):
+        //   • Truly fresh install (state.json missing OR last_seen_version
+        //     == "0.0.0") → show the cinematic. The cinematic sets
+        //     first_run_complete=true + seeds last_seen_version when it
+        //     finishes / is skipped.
+        //   • Upgrader from v0.1.x (state.json has a real version) → mark
+        //     first_run_complete immediately and let the What's New
+        //     dialog show as before. No cinematic for upgraders.
+        let priorState = WhatsNewStateStore.shared.load()
+        let isTrulyFresh = !priorState.firstRunComplete && priorState.lastSeenVersion == "0.0.0"
+        if isTrulyFresh {
+            // Cinematic owns the first_run_complete slot per S10 AC #7.
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                _ = OnboardingLauncher.shared.present(
+                    client: self.client,
+                    player: self.player,
+                    settings: self.settings
+                )
+            }
+        } else {
+            // Upgrader path — mark complete (idempotent) and show
+            // What's New if a minor bump landed.
+            WhatsNewLauncher.shared.markFirstRunComplete()
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                _ = WhatsNewLauncher.shared.showIfDue()
+            }
+        }
+    }
+
+    private func applyGestureToggle(_ enabled: Bool) {
+        guard let gestures else { return }
+        if enabled {
+            gestures.start()
+        } else {
+            gestures.stop()
         }
     }
 
@@ -162,6 +207,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         guard didBootstrap else { return }
         menuController.stop()
         hotkeys.disableAll()
+        gestures?.stop()
+        gestureSettingsObserver?.cancel()
         player.stop()
     }
 

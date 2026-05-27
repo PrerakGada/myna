@@ -43,8 +43,8 @@ targets:
     info:
       path: Resources/Info.plist
       properties:
-        # CFBundleShortVersionString must flow from MARKETING_VERSION (0.1.0)
-        # so Sparkle can detect "newer version available" — XcodeGen otherwise
+        # CFBundleShortVersionString must flow from MARKETING_VERSION so
+        # Sparkle can detect "newer version available" — XcodeGen otherwise
         # writes literal "1.0" and Sparkle never offers updates.
         # Per AUDIT_REPORT.md Lane A 🟡 #2.
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
