@@ -1,11 +1,7 @@
-// GesturesTab.swift — Settings tab for the v0.2 trackpad gestures
-// feature. The toggle lives here so users have one obvious place to
-// flip it on, alongside an honest "known limitations" note that
-// explains the OS gesture conflicts and the 4-finger-tap gap.
-//
-// This is a pure settings view — no NSEvent hooks. The AppDelegate
-// owns the GestureMonitor and observes `settings.trackpadGesturesEnabled`
-// to start/stop it.
+// GesturesTab.swift — Settings tab for the v0.2.x trackpad gesture
+// redesign. Pure SwiftUI form — no NSEvent hooks here. AppDelegate
+// owns the GestureMonitor and observes
+// `settings.trackpadGesturesEnabled` to start/stop it.
 import SwiftUI
 
 public struct GesturesTab: View {
@@ -19,41 +15,69 @@ public struct GesturesTab: View {
         Form {
             Section("Trackpad gestures (opt-in)") {
                 Toggle("Enable trackpad gestures", isOn: $viewModel.trackpadGesturesEnabled)
+                Text(
+                    "Off by default. When on, Myna listens to the trackpad "
+                    + "for four-finger gestures. Requires a Force Touch "
+                    + "trackpad for the click gestures."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
 
-            Section("What works") {
-                LabeledContent("Swipe left / right (4 fingers)") {
-                    Text("Seek backwards / forwards 30s").foregroundStyle(.secondary)
+            Section("Gestures") {
+                LabeledContent("4-finger tap") {
+                    Text("Speak selection").foregroundStyle(.secondary)
                 }
-                LabeledContent("Force-touch click") {
-                    Text("Pause / resume current playback").foregroundStyle(.secondary)
+                LabeledContent("4-finger double-tap") {
+                    Text("Speak selection (summary)").foregroundStyle(.secondary)
                 }
+                LabeledContent("4-finger click") {
+                    Text("Play / pause").foregroundStyle(.secondary)
+                }
+                LabeledContent("4-finger double-click") {
+                    Text("Stop").foregroundStyle(.secondary)
+                }
+            }
+
+            Section("How it works") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Hold four fingers on the trackpad to trigger.")
+                    Text(
+                        "Tap = brief contact with all four fingers, then lift. "
+                        + "Click = press hard (Force Touch) while four fingers "
+                        + "are down. Double versions need a second tap or click "
+                        + "within the system double-click interval."
+                    )
+                    .foregroundStyle(.secondary)
+                }
+                .font(.caption)
             }
 
             Section("Known limitations") {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("• 4-finger tap is not currently recognized.")
+                    Text("• Requires a built-in or Magic Trackpad.")
                     Text(
-                        "  Public macOS APIs don't expose finger counts on "
-                        + "global tap events. Use the keyboard hotkey "
-                        + "(⌥⇧⌘ S) or a Hammerspoon recipe instead."
+                        "  External mice and most Bluetooth keyboards' trackpads "
+                        + "are not detected. The toggle stays on but no gestures fire."
                     )
                     .foregroundStyle(.secondary)
 
-                    Text("• 4-finger swipes can conflict with Mission Control.")
+                    Text("• Uses a private macOS framework.")
                     Text(
-                        "  In System Settings → Trackpad → More Gestures, "
-                        + "either disable \"Swipe between full-screen apps\" "
-                        + "with 4 fingers, or set it to 3 fingers so Myna "
-                        + "owns 4."
+                        "  Public NSEvent APIs don't expose trackpad finger counts "
+                        + "for global gestures, so Myna reads them from Apple's "
+                        + "MultitouchSupport framework. This framework has powered "
+                        + "BetterTouchTool, Magnet, Hammerspoon and similar tools "
+                        + "for 15+ years; if Apple ever removes it, gestures will "
+                        + "stop working and Myna will fall back to hotkeys only."
                     )
                     .foregroundStyle(.secondary)
 
-                    Text("• Force-touch click finger count is approximate.")
+                    Text("• Click gestures need a Force Touch trackpad.")
                     Text(
-                        "  Global pressure events don't include touch lists, "
-                        + "so any deep-press counts. Light/medium clicks are "
-                        + "ignored."
+                        "  Pre-2015 trackpads don't report a click pressure stage, "
+                        + "so the click and double-click gestures will not fire on "
+                        + "that hardware. Taps and double-taps still work."
                     )
                     .foregroundStyle(.secondary)
                 }
@@ -61,6 +85,6 @@ public struct GesturesTab: View {
             }
         }
         .padding()
-        .frame(width: 460, height: 380)
+        .frame(width: 480, height: 480)
     }
 }
